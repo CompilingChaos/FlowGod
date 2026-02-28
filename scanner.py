@@ -69,18 +69,19 @@ def calculate_hvn_conviction(df_1m, t_type, spot):
         return conviction, label
     except: return 1.0, "N/A"
 
-def calculate_trv_aggression(candle_df, ticker):
-    if candle_df is None or not isinstance(candle_df, pd.DataFrame): return "Unknown", 0
+def detect_icebergs(df_1m):
+    """Tier-3: Effort vs Result. Identifies massive limit orders absorbing volume."""
+    if df_1m is None or len(df_1m) < 30: return False
     try:
-        candle = candle_df.iloc[-1]
-        range_total = candle['High'] - candle['Low']
-        if range_total == 0: return "Neutral", 5
-        buyer_agg = (candle['Close'] - candle['Low']) / range_total
-        vwap = candle_df['VWAP'].iloc[-1] if 'VWAP' in candle_df.columns else candle['Close']
-        if buyer_agg > 0.8 and candle['Close'] > vwap:
-            return "Institutional Sweep (TRV Max)", 50
-        return "Standard Flow", 10
-    except: return "Unknown", 0
+        tr = (df_1m['High'] - df_1m['Low']).replace(0, 0.01)
+        df_1m['vol_density'] = df_1m['Volume'] / tr
+        roll_mean = df_1m['vol_density'].rolling(window=30).mean()
+        roll_std = df_1m['vol_density'].rolling(window=30).std()
+        df_1m['iceberg_z'] = (df_1m['vol_density'] - roll_mean) / (roll_std + 0.1)
+        vol_90 = df_1m['Volume'].quantile(0.90)
+        latest = df_1m.iloc[-5:] 
+        return ((latest['iceberg_z'] > 3.0) & (latest['Volume'] > vol_90)).any()
+    except: return False
 
 def classify_aggression(last_price, bid, ask):
     if last_price >= ask and ask > 0: return "Aggressive (Ask)", 50
@@ -90,11 +91,8 @@ def classify_aggression(last_price, bid, ask):
 def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_vel=0.0):
     if df.empty: return pd.DataFrame()
     skew, contango, vol_bias = calculate_volatility_surface(df)
-    
     baseline = get_ticker_baseline(ticker)
     trust_mult = baseline.get('trust_score', 1.0) if baseline else 1.0
-    
-    # Tier-3 Sentiment Fusion
     avg_social = baseline.get('avg_social_vel', 0.0) if baseline else 0.0
     hype_z = (social_vel / (avg_social + 0.1)) if avg_social > 0 else 0.0
 
@@ -105,7 +103,17 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
         df.at[idx, 'gex'] = g * row['openInterest'] * 100 * row['underlying_price']
     call_wall, put_wall, flip = map_gex_walls(df)
     spot = df.iloc[0]['underlying_price']
-    trv_label, trv_bonus = calculate_trv_aggression(candle_df, ticker)
+    
+    # Tier-3 Alpha Aggression
+    trv_label, trv_bonus = "Standard Flow", 10
+    if candle_df is not None:
+        if detect_icebergs(candle_df): trv_label, trv_bonus = "Institutional ICEBERG", 65
+        else:
+            last_c = candle_df.iloc[-1]
+            buyer_agg = (last_c['Close'] - last_c['Low']) / (last_c['High'] - last_c['Low'] + 0.01)
+            vwap = candle_df['VWAP'].iloc[-1] if 'VWAP' in candle_df.columns else last_c['Close']
+            if buyer_agg > 0.8 and last_c['Close'] > vwap: trv_label, trv_bonus = "Sweep (TRV Max)", 50
+
     results = []
     for _, row in df.iterrows():
         agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
@@ -117,9 +125,7 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
         if abs(spot - call_wall) / spot < 0.01: score -= 30
         if (vol_bias == "BULLISH" and row['side'] == 'calls') or (vol_bias == "BEARISH" and row['side'] == 'puts'): score += 40
         
-        # FINAL SCORING
         score = int(score * trust_mult * hvn_conv)
-        
         if (row['volume'] > row['openInterest'] and row['volume'] > 500) or score >= 85:
             results.append({
                 'ticker': ticker, 'contract': row['contractSymbol'], 'type': row['side'].upper(),
@@ -148,7 +154,7 @@ def generate_system_verdict(trade):
         if skew > 0.05: verdict, logic = "PUT (Short)", "Aggressive sweep + Bearish Skew."
         elif spot > 0 and call_wall > 0 and (call_wall - spot) / spot < 0.02: verdict, logic = "PUT (Short)", "Resistance rejection at Call Wall."
         else: verdict, logic = "PUT (Short)", "Bearish flow detected."
-    elif "Dark Pool" in agg: verdict, logic = "BUY (Stock)", "Institutional absorption."
+    elif "Dark Pool" in agg or "ICEBERG" in agg: verdict, logic = "BUY (Stock)", "Institutional absorption."
     return verdict, logic
 
 def process_results(all_results, macro_context, sector_performance):
