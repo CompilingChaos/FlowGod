@@ -1,16 +1,37 @@
 import yfinance as yf
 import pandas as pd
+import requests
 from datetime import datetime
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
+# Persistent Session for connection reuse
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+})
+
+@retry(
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    stop=stop_after_attempt(3),
+    retry=retry_if_exception_type((requests.exceptions.RequestException, Exception)),
+    reraise=True
+)
 def get_options_data(ticker):
-    stock = yf.Ticker(ticker)
+    """Fetches options data with retries and session reuse."""
+    stock = yf.Ticker(ticker, session=session)
+    
     try:
-        price = stock.info.get('regularMarketPrice') or stock.fast_info.get('lastPrice', 0)
+        # Prefer fast_info for performance
+        price = stock.fast_info.get('lastPrice', 0)
     except:
         price = 0
     
     all_data = []
-    for exp in list(stock.options)[:10]:   # next 10 expirations
+    options = list(stock.options)
+    if not options:
+        return pd.DataFrame(), price
+
+    for exp in options[:10]:   # next 10 expirations
         chain = stock.option_chain(exp)
         for side_name, side in [("calls", chain.calls), ("puts", chain.puts)]:
             if side.empty: continue
