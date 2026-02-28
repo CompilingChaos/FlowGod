@@ -5,7 +5,7 @@ from data_fetcher import get_options_data
 from scanner import score_unusual
 from alerts import send_alert
 from historical_db import update_historical
-from config import WATCHLIST_FILE, MAX_TICKERS
+from historical_db import update_historical, is_alert_sent, mark_alert_sent
 
 async def scan_cycle():
     watchlist = pd.read_csv(WATCHLIST_FILE)['ticker'].tolist()[:MAX_TICKERS]
@@ -16,9 +16,16 @@ async def scan_cycle():
             update_historical(ticker, df)
             flags = score_unusual(df, ticker)
             for _, trade in flags.iterrows():
+                # Deduplication check
+                if is_alert_sent(trade['contract']):
+                    continue
+
                 print(f"Alert found for {ticker}!")
                 await send_alert(trade.to_dict())
+                mark_alert_sent(trade['contract'])
+
             time.sleep(2)  # Delay to avoid rate limits
+
         except Exception as e:
             print(f"Error on {ticker}: {e}")
 

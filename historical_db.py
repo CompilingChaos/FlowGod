@@ -5,8 +5,12 @@ from config import DB_FILE
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
+    # Historical Volume/OI table
     conn.execute('''CREATE TABLE IF NOT EXISTS hist_vol_oi 
                  (ticker TEXT, contract TEXT, date TEXT, volume INTEGER, oi INTEGER)''')
+    # Deduplication table for alerts
+    conn.execute('''CREATE TABLE IF NOT EXISTS alerts_sent 
+                 (contract TEXT PRIMARY KEY, timestamp TEXT)''')
     conn.commit()
     return conn
 
@@ -29,3 +33,19 @@ def get_avg_vol_oi(ticker, contract, days=30):
         "WHERE ticker=? AND contract=? AND date >= ?", 
         conn, params=(ticker, contract, cutoff))
     return df.iloc[0] if not df.empty else pd.Series({'avg_vol': 0, 'avg_oi': 0})
+
+def is_alert_sent(contract):
+    conn = init_db()
+    # Auto-clean alerts older than 24h
+    cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+    conn.execute("DELETE FROM alerts_sent WHERE timestamp < ?", (cutoff,))
+    conn.commit()
+    
+    res = conn.execute("SELECT 1 FROM alerts_sent WHERE contract = ?", (contract,)).fetchone()
+    return res is not None
+
+def mark_alert_sent(contract):
+    conn = init_db()
+    conn.execute("INSERT OR REPLACE INTO alerts_sent (contract, timestamp) VALUES (?, ?)",
+                 (contract, datetime.now().isoformat()))
+    conn.commit()

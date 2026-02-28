@@ -9,6 +9,8 @@ on:
 jobs:
   track_whales:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Allows committing the DB back to the repo
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -22,22 +24,17 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Cache Database
-        uses: actions/cache@v4
-        with:
-          path: database.db
-          key: ${{ runner.os }}-database-${{ github.run_id }}
-          restore-keys: |
-            ${{ runner.os }}-database-
-
       - name: Run Whale Scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
         run: python main_github.py
 
-      - name: Save Database
-        uses: actions/upload-artifact@v4
-        with:
-          name: database
-          path: database.db
+      - name: Commit Database Changes
+        run: |
+          git config --global user.name "FlowGod-Bot"
+          git config --global user.email "bot@flowgod.ai"
+          git add database.db
+          git commit -m "Update historical volume/OI data [skip ci]" || echo "No changes to commit"
+          git push origin master
