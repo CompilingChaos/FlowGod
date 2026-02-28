@@ -1,0 +1,61 @@
+import pandas as pd
+import yfinance as yf
+import logging
+import os
+from telegram import Bot
+import asyncio
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+
+TRADES_FILE = "trades_to_verify.csv"
+
+async def run_backtest():
+    if not os.path.exists(TRADES_FILE):
+        logging.info("No trades to verify.")
+        return
+
+    df = pd.read_csv(TRADES_FILE)
+    open_trades = df[df['status'] == 'OPEN']
+    
+    if open_trades.empty:
+        logging.info("No open trades to track.")
+        return
+
+    logging.info(f"Tracking performance for {len(open_trades)} trades...")
+    
+    summary_msg = "📈 TRADE PERFORMANCE UPDATE 📉
+
+"
+    updated = False
+
+    for idx, row in open_trades.iterrows():
+        try:
+            ticker = row['ticker']
+            entry_price = row['entry_price']
+            
+            # Fetch current price
+            stock = yf.Ticker(ticker)
+            current_price = stock.fast_info.get('lastPrice', 0)
+            
+            if current_price > 0:
+                p_l = ((current_price - entry_price) / entry_price) * 100
+                df.at[idx, 'p_l'] = round(p_l, 2)
+                
+                status_icon = "🟢" if p_l > 0 else "🔴"
+                summary_msg += f"{status_icon} {ticker}: {p_l:+.2f}% (Price: ${current_price:.2f} vs Entry: ${entry_price:.2f})
+"
+                updated = True
+        except Exception as e:
+            logging.error(f"Backtest failed for {row['ticker']}: {e}")
+
+    if updated:
+        df.to_csv(TRADES_FILE, index=False)
+        bot = Bot(token=TELEGRAM_TOKEN)
+        try:
+            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=summary_msg)
+            logging.info("Performance summary sent to Telegram.")
+        except Exception as e:
+            logging.error(f"Failed to send backtest summary: {e}")
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(run_backtest())

@@ -13,6 +13,17 @@ def get_stock_heat(ticker, live_vol):
         return z_score, baseline.get('sector', 'Unknown')
     return 0, "Unknown"
 
+def calculate_color(S, K, T, r, sigma, option_type='calls'):
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0.0
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        d2 = d1 - sigma * math.sqrt(T)
+        nd1 = norm.pdf(d1)
+        term1 = -nd1 / (2 * S * T * sigma * math.sqrt(T))
+        term2 = 1 + (2 * r * T * d1 - d2 * sigma * math.sqrt(T)) / (sigma * math.sqrt(T))
+        return round(term1 * term2, 6)
+    except: return 0.0
+
 def calculate_greeks(S, K, T, r, sigma, option_type='calls'):
     if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0, 0, 0, 0, 0
     try:
@@ -22,8 +33,8 @@ def calculate_greeks(S, K, T, r, sigma, option_type='calls'):
         gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
         vanna = (norm.pdf(d1) * d2) / sigma
         charm = -norm.pdf(d1) * (r / (sigma * math.sqrt(T)) - d2 / (2 * T))
-        color = -norm.pdf(d1) / (2 * S * T * sigma * math.sqrt(T)) * (1 + (2 * r * T * d1 - d2 * sigma * math.sqrt(T)) / (sigma * math.sqrt(T)))
-        return round(delta, 3), round(gamma, 4), round(vanna, 4), round(charm, 4), round(color, 6)
+        color = calculate_color(S, K, T, r, sigma, option_type)
+        return round(delta, 3), round(gamma, 4), round(vanna, 4), round(charm, 4), color
     except: return 0, 0, 0, 0, 0
 
 def calculate_volatility_surface(df):
@@ -67,35 +78,31 @@ def calculate_hvn_conviction(df_1m, t_type, spot):
         return conviction, label
     except: return 1.0, "N/A"
 
-def detect_microstructure_conviction(df_1m):
-    """
-    Tier-3: Multi-Layer Microstructure Engine.
-    Identifies Icebergs, Sweeps, and Absorption without external tape.
-    """
-    if df_1m is None or len(df_1m) < 30: return "Standard", 0
+def predict_trend_probability(df_1m, call_wall, put_wall):
+    """Tier-4: Calculates probability of move ignition using VWAP and Walls."""
+    if df_1m is None or len(df_1m) < 30: return 0.5
     try:
-        last_c = df_1m.iloc[-1]
+        last_p = df_1m['Close'].iloc[-1]
+        vwap = df_1m['VWAP'].iloc[-1]
+        vwap_std = df_1m['Close'].rolling(window=30).std().iloc[-1]
+        z = abs(last_p - vwap) / (vwap_std + 0.01)
+        dist_wall = min(abs(last_p - call_wall), abs(last_p - put_wall)) / last_p
+        wall_mult = 1.5 if dist_wall < 0.01 else 1.0
+        return round(min(0.99, norm.cdf(z) * wall_mult), 2)
+    except: return 0.5
+
+def detect_icebergs(df_1m):
+    if df_1m is None or len(df_1m) < 30: return False
+    try:
         tr = (df_1m['High'] - df_1m['Low']).replace(0, 0.01)
         df_1m['vol_density'] = df_1m['Volume'] / tr
-        
-        # 1. Iceberg Detection (Effort vs Result)
         roll_mean = df_1m['vol_density'].rolling(window=30).mean()
         roll_std = df_1m['vol_density'].rolling(window=30).std()
         df_1m['iceberg_z'] = (df_1m['vol_density'] - roll_mean) / (roll_std + 0.1)
         vol_90 = df_1m['Volume'].quantile(0.90)
-        
-        is_iceberg = (last_c['iceberg_z'] > 3.0) and (last_c['Volume'] > vol_90)
-        
-        # 2. Sweep Aggression (Candle Shape + VWAP)
-        buyer_agg = (last_c['Close'] - last_c['Low']) / (last_c['High'] - last_c['Low'] + 0.01)
-        vwap = df_1m['VWAP'].iloc[-1] if 'VWAP' in df_1m.columns else last_c['Close']
-        is_sweep = buyer_agg > 0.8 and last_c['Close'] > vwap
-        
-        if is_iceberg and is_sweep: return "🚨 INSTITUTIONAL SWEEP (Iceberg Broken) 🚨", 80
-        if is_iceberg: return "🧊 ICEBERG ABSORPTION (Dark Proxy) 🧊", 65
-        if is_sweep: return "🚀 AGGRESSIVE SWEEP (Lifting Ask) 🚀", 50
-        return "Passive/Neutral Flow", 10
-    except: return "Unknown", 0
+        latest = df_1m.iloc[-5:] 
+        return ((latest['iceberg_z'] > 3.0) & (latest['Volume'] > vol_90)).any()
+    except: return False
 
 def classify_aggression(last_price, bid, ask):
     if last_price >= ask and ask > 0: return "Aggressive (Ask)", 50
@@ -110,9 +117,6 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
     avg_social = baseline.get('avg_social_vel', 0.0) if baseline else 0.0
     hype_z = (social_vel / (avg_social + 0.1)) if avg_social > 0 else 0.0
 
-    # 1. Microstructure Check
-    micro_label, micro_bonus = detect_microstructure_conviction(candle_df)
-
     for idx, row in df.iterrows():
         T = max(0.001, row['dte']) / 365.0
         d, g, v, c, color = calculate_greeks(row['underlying_price'], row['strike'], T, 0.045, row['impliedVolatility'], row['side'])
@@ -124,15 +128,27 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
     total_decay_vel = int(df['decay_vel'].sum())
     spot = df.iloc[0]['underlying_price']
     
+    # Tier-4 Trend Prob
+    trend_p = predict_trend_probability(candle_df, call_wall, put_wall)
+    
+    trv_label, trv_bonus = "Standard Flow", 10
+    if candle_df is not None:
+        if detect_icebergs(candle_df): trv_label, trv_bonus = "Institutional ICEBERG", 65
+        else:
+            last_c = candle_df.iloc[-1]
+            buyer_agg = (last_c['Close'] - last_c['Low']) / (last_c['High'] - last_c['Low'] + 0.01)
+            vwap = candle_df['VWAP'].iloc[-1] if 'VWAP' in candle_df.columns else last_c['Close']
+            if buyer_agg > 0.8 and last_c['Close'] > vwap: trv_label, trv_bonus = "Sweep (TRV Max)", 50
+
     results = []
     for _, row in df.iterrows():
         agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
         hvn_conv, hvn_label = calculate_hvn_conviction(candle_df, row['side'].upper(), spot)
-        
         score = 0
         if row['volume'] > 1000: score += 20
         if row['notional'] > 500000: score += 40
-        score += agg_bonus + micro_bonus
+        score += agg_bonus + trv_bonus
+        if trend_p > 0.85: score += 30 # Trend ignition bonus
         if abs(spot - call_wall) / spot < 0.01: score -= 30
         if (vol_bias == "BULLISH" and row['side'] == 'calls') or (vol_bias == "BEARISH" and row['side'] == 'puts'): score += 40
         
@@ -145,7 +161,8 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
                 'notional': int(row['notional']), 'rel_vol': round(row['volume']/(get_stats(ticker, row['contractSymbol'])['avg_vol']+1), 1),
                 'delta': row['delta'], 'gamma': row['gamma'], 'vanna': row['vanna'], 'charm': row['charm'],
                 'gex': int(row['gex']), 'decay_vel': total_decay_vel, 'call_wall': call_wall, 'put_wall': put_wall, 'flip': flip,
-                'skew': skew, 'bias': vol_bias, 'score': score, 'aggression': f"{agg_label} | {micro_label} | {hvn_label}",
+                'skew': skew, 'bias': vol_bias, 'score': score, 'trend_prob': trend_p,
+                'aggression': f"{agg_label} | {trv_label} | {hvn_label}",
                 'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
                 'hype_z': round(hype_z, 1), 'detection_reason': f"Score {score} | {hvn_label} | {vol_bias}"
             })
@@ -154,14 +171,16 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
 def generate_system_verdict(trade):
     t_type, spot = trade['type'], trade.get('underlying_price', 0)
     call_wall, put_wall = trade.get('call_wall', 0), trade.get('put_wall', 0)
-    skew, agg = trade.get('skew', 0), trade.get('aggression', "")
+    skew, agg, trend_p = trade.get('skew', 0), trade.get('aggression', ""), trade.get('trend_prob', 0.5)
     verdict, logic = "NEUTRAL", "Low conviction."
     if "CALL" in t_type and "Aggressive" in agg:
-        if skew < 0: verdict, logic = "CALL (Long)", "Aggressive sweep + Bullish Skew."
+        if trend_p > 0.8: verdict, logic = "CALL (Long)", f"Aggressive sweep + High Trend Probability ({trend_p*100}%)."
+        elif skew < 0: verdict, logic = "CALL (Long)", "Aggressive sweep + Bullish Skew."
         elif spot > 0 and put_wall > 0 and (spot - put_wall) / spot < 0.02: verdict, logic = "CALL (Long)", "Support bounce at Put Wall."
         else: verdict, logic = "BUY (Stock)", "Bullish flow, conservative tech."
     elif "PUT" in t_type and "Aggressive" in agg:
-        if skew > 0.05: verdict, logic = "PUT (Short)", "Aggressive sweep + Bearish Skew."
+        if trend_p > 0.8: verdict, logic = "PUT (Short)", f"Aggressive sweep + High Trend Probability ({trend_p*100}%)."
+        elif skew > 0.05: verdict, logic = "PUT (Short)", "Aggressive sweep + Bearish Skew."
         elif spot > 0 and call_wall > 0 and (call_wall - spot) / spot < 0.02: verdict, logic = "PUT (Short)", "Resistance rejection at Call Wall."
         else: verdict, logic = "PUT (Short)", "Bearish flow detected."
     elif "Dark Pool" in agg or "ICEBERG" in agg: verdict, logic = "BUY (Stock)", "Institutional absorption."

@@ -8,46 +8,42 @@ from google import genai
 from historical_db import get_rag_context
 from scanner import generate_system_verdict
 
+# Modern Google GenAI Client
 def get_ai_summary(trade, ticker_context="", macro_context=None):
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if not gemini_key: return None
+    if not GEMINI_API_KEY: return None
     try:
-        client = genai.Client(api_key=gemini_key)
+        client = genai.Client(api_key=GEMINI_API_KEY)
         m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Neutral"}
         macro_str = f"Market: {m['sentiment']} (SPY: {m['spy']}%, DXY: {m['dxy']}%, TNX: {m['tnx']}%)"
         rag_context = get_rag_context(trade['ticker'], trade['type'])
         sys_verdict, sys_logic = generate_system_verdict(trade)
 
-        prompt = f"""As an institutional flow expert, evaluate this trade and the imminence of a trend.
+        prompt = f"""As an institutional flow expert, evaluate this trade.
 
 TICKER: {trade['ticker']} {trade['type']} {trade['strike']} | Exp: {trade['exp']}
 {macro_str}
 {rag_context}
 
-TREND & PROBABILITY:
-Trend Probability: {trade.get('trend_prob', 0)*100:.0f}% (Calculated via VWAP/Wall divergence)
-Hype Z-Score: {trade.get('hype_z', 0)} (High = Retail FOMO, Low = Institutional Alpha)
+SYSTEM VERDICT: {sys_verdict}
+SYSTEM LOGIC: {sys_logic}
 
-GREEKS & DECAY:
-Delta: {trade['delta']} | Gamma: {trade['gamma']} | Vanna: {trade['vanna']} | Charm: {trade['charm']}
-Hedge Decay (Color): {trade.get('decay_vel', 0)}
-GEX Pressure: ${trade['gex']:,} | Gamma Flip Level: ${trade['flip']}
-
-TECHNICALS:
-Skew: {trade['skew']} ({trade['bias']} bias)
-Walls: Call Wall: ${trade['call_wall']} | Put Wall: ${trade['put_wall']}
+TRADE SPECS:
+Vol: {trade['volume']} | Aggression: {trade['aggression']}
+Delta: {trade['delta']} | Gamma: {trade['gamma']} | GEX: ${trade['gex']:,}
+Volatility: Skew is {trade['skew']} ({trade['bias']} bias)
+Technicals: Call Wall: ${trade['call_wall']} | Put Wall: ${trade['put_wall']} | Flip: ${trade['flip']}
 
 AI INSTRUCTIONS:
-1. Validate SYSTEM VERDICT: {sys_verdict} ({sys_logic}).
-2. Use 'Trend Probability' to determine if an entry is needed NOW or if we are still in absorption.
-3. Suggest Trade Republic compatible action (BUY, CALL, PUT). Respond ONLY with JSON.
+1. Validate the SYSTEM VERDICT and suggest a Trade Republic compatible action (BUY, CALL, or PUT).
+2. ESTIMATE DURATION: How many days/weeks until this trade likely reaches its profit target based on DTE and GEX?
+3. Respond ONLY with JSON.
 
 RESPONSE SCHEMA:
 {{
   "is_unusual": boolean,
   "confidence_score": integer,
   "final_verdict": "BUY" | "CALL" | "PUT" | "NEUTRAL",
-  "estimated_duration": "string",
+  "estimated_duration": "string (e.g. 2-5 days)",
   "verdict_reasoning": "...",
   "category": "...",
   "analysis": "..."
@@ -60,41 +56,43 @@ RESPONSE SCHEMA:
         return json.loads(text)
     except: return None
 
-async def send_alert(trade, ticker_context="", macro_context=None):
+async def send_alert(trade, ticker_context="", macro_context=None, is_shadow=False):
     ai = get_ai_summary(trade, ticker_context, macro_context)
     if ai and not ai.get("is_unusual", True): return False
     
+    m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Neutral"}
     bot = Bot(token=TELEGRAM_TOKEN)
     stars = "⭐" * (ai['confidence_score'] // 20) if ai and 'confidence_score' in ai else "N/A"
     
     sys_v, sys_l = generate_system_verdict(trade)
     final_v = ai['final_verdict'] if ai and 'final_verdict' in ai else sys_v
     
+    shadow_label = "🕵️ SHADOW TRIGGERED 🕵️\n" if is_shadow else ""
+    
     msg = f"""🚨 FLOWGOD ALPHA: {trade['ticker']} 🚨
-{stars} (Conviction: {ai['confidence_score'] if ai and 'confidence_score' in ai else '??'}%)
+{shadow_label}{stars} (Conviction: {ai['confidence_score'] if ai and 'confidence_score' in ai else '??'}%)
 
 🏁 VERDICT: {final_v}
-📈 TREND PROBABILITY: {trade.get('trend_prob', 0)*100:.0f}%
-⏳ EST. DURATION: {ai['estimated_duration'] if ai and 'estimated_duration' in ai else 'Unknown'}
-Reasoning: {ai['verdict_reasoning'] if ai and 'verdict_reasoning' in ai else sys_l}
+⏳ EST. DURATION: {ai['estimated_duration'] if ai else 'Unknown'}
+Reasoning: {ai['verdict_reasoning'] if ai else sys_l}
 
 📊 TRADE DETAILS:
 Type: {trade['type']} {trade['strike']} | Exp: {trade['exp']}
 Agg: {trade['aggression']}
 Vol: {trade['volume']:,} | Notional: ${trade['notional']:,}
 
-📐 GREEKS & VELOCITY:
+📐 GEX & WALLS:
 GEX Pressure: ${trade['gex']:,}
-Hedge Decay (Color): {trade.get('decay_vel', 0)}
 Call Wall: ${trade['call_wall']} | Put Wall: ${trade['put_wall']}
 Gamma Flip: ${trade['flip']}
 
-💬 SOCIAL SENTIMENT:
-Hype Z-Score: {trade.get('hype_z', 0)} ({'LOUD/FOMO' if trade.get('hype_z',0) > 2 else 'QUIET/ALPHA'})
-
 🧠 AI ANALYST:
+Category: {ai['category'] if ai and 'category' in ai else 'Unknown'}
 Analysis: {ai['analysis'] if ai and 'analysis' in ai else 'N/A'}"""
 
+    # Add "Save Trade" button (Native Callback)
+    # We store the core data in the callback string
+    # Format: save|TICKER|TYPE|STRIKE|PRICE
     cb_data = f"save|{trade['ticker']}|{trade['type']}|{trade['strike']}|{trade['underlying_price']}"
     keyboard = [[InlineKeyboardButton("💾 SAVE TRADE", callback_data=cb_data)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
