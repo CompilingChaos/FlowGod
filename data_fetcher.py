@@ -58,6 +58,26 @@ def get_advanced_macro():
         logging.error(f"Advanced macro fetch failed: {e}")
         return {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'sentiment': "Unknown"}
 
+def get_sector_etf_performance():
+    """Fetches performance of key sector ETFs for baselining."""
+    etfs = {
+        'Technology': 'XLK',
+        'Healthcare': 'XLV',
+        'Financial': 'XLF',
+        'Energy': 'XLE',
+        'Consumer Cyclical': 'XLY',
+        'Communication Services': 'XLC',
+        'Semiconductors': 'SMH'
+    }
+    performance = {}
+    for sector, symbol in etfs.items():
+        try:
+            ticker = yf.Ticker(symbol)
+            performance[sector] = ticker.fast_info.get('day_change_percent', 0)
+        except:
+            performance[sector] = 0
+    return performance
+
 def get_stock_info(ticker):
     """Fetches just the stock price and volume (Fast/Light)."""
     try:

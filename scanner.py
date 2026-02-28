@@ -62,7 +62,6 @@ def score_unusual(df, ticker, stock_z, sector="Unknown"):
         if stock_z > 5: score += 60
 
         # FINAL SCORING WITH TRUST MULTIPLIER
-        # This rewards tickers where whales consistently hold overnight
         score = int(score * trust_multiplier)
 
         # 3. Filtering
@@ -99,39 +98,59 @@ def score_unusual(df, ticker, stock_z, sector="Unknown"):
             
     return pd.DataFrame(results)
 
-def process_results(all_results, macro_context):
-    """Groups results into clusters and filters by Relative Sector Heat."""
+def process_results(all_results, macro_context, sector_performance):
+    """Groups results into high-conviction Sector and Ticker clusters."""
     if not all_results: return []
     
     df = pd.DataFrame(all_results)
-    spy_z = abs(macro_context.get('spy_pc', 0) / 0.5) 
-    
-    sector_heat = df.groupby('sector')['stock_z'].mean().to_dict()
     final_alerts = []
     
-    for ticker, group in df.groupby('ticker'):
-        if len(group) >= 3:
-            best_trade = group.loc[group['score'].idxmax()].to_dict()
-            ticker_sector = best_trade['sector']
-            s_heat = sector_heat.get(ticker_sector, 0)
+    # --- 1. SECTOR SWEEP DETECTION (Vector 3) ---
+    # Total notional and unique tickers hit per sector
+    for sector, s_group in df.groupby('sector'):
+        if sector == "Unknown": continue
+        
+        unique_tickers = s_group['ticker'].unique()
+        total_notional = s_group['notional'].sum()
+        
+        # ETF Baseline check: Is the sector outperforming its ETF/SPY?
+        etf_perf = sector_performance.get(sector, 0)
+        spy_perf = macro_context.get('spy', 0)
+        
+        # ALPHA: 3+ tickers hit AND >$2M total premium AND (Sector Heat or Divergence)
+        if len(unique_tickers) >= 3 and total_notional > 2000000:
+            # Check for institutional divergence
+            is_divergent = abs(etf_perf - spy_perf) > 1.0 # Moving 1% different than market
             
-            is_valid_sector_move = s_heat > 2.0 and s_heat > (spy_z * 2)
+            sector_alert = s_group.loc[s_group['score'].idxmax()].to_dict()
+            sector_alert['type'] = "🚨 SECTOR SWEEP 🚨"
+            sector_alert['aggression'] = f"INSTITUTIONAL CAMPAIGN: {len(unique_tickers)} tickers hit in {sector}."
+            sector_alert['notional'] = total_notional
+            sector_alert['score'] += 100 # Maximum conviction
             
-            cluster_msg = f"CLUSTER: {len(group)} strikes targeted."
-            if is_valid_sector_move:
-                cluster_msg += f" 🔥 SECTOR STRENGTH: {ticker_sector} outperforming SPY."
+            if is_divergent:
+                sector_alert['analysis'] = f"Massive sector-wide allocation detected in {sector} diverging from SPY."
             
-            best_trade['aggression'] = cluster_msg
-            best_trade['score'] += 50 
-            best_trade['notional'] = group['notional'].sum()
-            best_trade['volume'] = group['volume'].sum()
+            final_alerts.append(sector_alert)
+            # Remove these tickers from individual processing to avoid noise
+            df = df[~df['ticker'].isin(unique_tickers)]
+
+    # --- 2. TICKER CLUSTERING (Vertical/Horizontal) ---
+    for ticker, t_group in df.groupby('ticker'):
+        # If 3+ strikes or expirations hit -> Cluster
+        if len(t_group) >= 3:
+            best_trade = t_group.loc[t_group['score'].idxmax()].to_dict()
+            total_notional = t_group['notional'].sum()
+            total_vol = t_group['volume'].sum()
+            
+            best_trade['type'] = "📦 TICKER CLUSTER 📦"
+            best_trade['aggression'] = f"Whale scaling: {len(t_group)} strikes/expirations targeted."
+            best_trade['notional'] = total_notional
+            best_trade['volume'] = total_vol
+            best_trade['score'] += 50
             final_alerts.append(best_trade)
         else:
-            for _, trade in group.iterrows():
-                t_dict = trade.to_dict()
-                s_heat = sector_heat.get(t_dict['sector'], 0)
-                if s_heat > 2.0 and spy_z > 1.5:
-                    t_dict['score'] -= 20 
-                final_alerts.append(t_dict)
+            # Individual high-conviction trades
+            final_alerts.extend(t_group.to_dict('records'))
                 
     return final_alerts
