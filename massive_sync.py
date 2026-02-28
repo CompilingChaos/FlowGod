@@ -20,8 +20,9 @@ def sync_baselines():
 
     logging.info(f"Starting Massive.com sync for {len(watchlist)} tickers (30-day window)...")
     
-    end_date = datetime.now().strftime('%Y-%m-%d')
-    start_date = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d') # Get 60 days to ensure 30 trading days
+    # Shift end_date back by 3 days to avoid 'DELAYED' status on Massive Free Tier
+    end_date = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=63)).strftime('%Y-%m-%d') 
 
     count = 0
     for ticker in watchlist:
