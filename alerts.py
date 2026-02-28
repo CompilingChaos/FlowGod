@@ -88,9 +88,11 @@ Gamma Flip: ${trade['flip']}
 Category: {ai['category'] if ai and 'category' in ai else 'Unknown'}
 Analysis: {ai['analysis'] if ai and 'analysis' in ai else 'N/A'}"""
 
-    # Add "Save Trade" button
-    # Data is encoded in callback_data (Limited to 64 bytes, so we just send the contract symbol)
-    keyboard = [[InlineKeyboardButton("💾 SAVE TRADE", callback_data=f"save_{trade['contract']}_{trade['underlying_price']}")]]
+    # Add "Save Trade" button (Native Callback)
+    # We store the core data in the callback string
+    # Format: save|TICKER|TYPE|STRIKE|PRICE
+    cb_data = f"save|{trade['ticker']}|{trade['type']}|{trade['strike']}|{trade['underlying_price']}"
+    keyboard = [[InlineKeyboardButton("💾 SAVE TRADE", callback_data=cb_data)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:

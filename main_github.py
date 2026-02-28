@@ -15,6 +15,7 @@ from historical_db import (
 )
 from config import WATCHLIST_FILE, MAX_TICKERS, MIN_STOCK_Z_SCORE
 from massive_sync import sync_baselines
+from bot_listener import harvest_saved_trades
 
 async def process_ticker_sequential(ticker, sector_from_csv):
     """Sequential worker function."""
@@ -23,29 +24,19 @@ async def process_ticker_sequential(ticker, sector_from_csv):
         stock_data = get_stock_info(ticker)
         price = stock_data['price']
         stock_vol = stock_data['volume']
-        
         if price == 0 or stock_vol == 0: return []
 
         stock_z, sector_from_db = get_stock_heat(ticker, stock_vol)
-        # Use CSV sector as primary truth, fallback to DB
         sector = sector_from_csv if sector_from_csv != "Unknown" else sector_from_db
-        
-        is_hot = stock_z > 1.0 
-        always_scan = ticker in ['SPY', 'QQQ', 'TSLA', 'NVDA', 'AAPL']
-        
-        if not is_hot and not always_scan: return []
+        if not (stock_z > 1.0 or ticker in ['SPY', 'QQQ', 'TSLA', 'NVDA', 'AAPL']): return []
 
-        # Tier-2: Get Intraday Candle for TRV and Dark Pool Proxies
+        logging.info(f"Ticker {ticker} is HOT (Z: {stock_z:.1f}). Fetching options...")
         candle = get_intraday_aggression(ticker)
-        
-        # Tier-2: Pull deeper chain for GEX Wall mapping
         df = get_option_chain_data(ticker, price, stock_vol, full_chain=True)
         if df.empty: return []
 
         update_historical(ticker, df)
         context = get_ticker_context(ticker, days=2)
-
-        # Scorer now handles Surface, GEX Walls, and TRV
         flags = score_unusual(df, ticker, stock_z, sector, candle)
 
         trades_to_alert = []
@@ -68,10 +59,9 @@ async def verify_stickiness():
             ticker_match = re.match(r'^([A-Z]+)', contract)
             if not ticker_match: continue
             ticker = ticker_match.group(1)
-            oi_change = live_oi - yest_oi
-            ratio = oi_change / yest_vol if yest_vol > 0 else 0
+            ratio = (live_oi - yest_oi) / yest_vol if yest_vol > 0 else 0
             if ratio >= 0.70:
-                await send_confirmation_alert(ticker, contract, oi_change, ratio*100)
+                await send_confirmation_alert(ticker, contract, live_oi-yest_oi, ratio*100)
                 update_trust_score(ticker, 0.15) 
                 mark_alert_confirmed(contract, 1)
             elif ratio < 0.20:
@@ -81,25 +71,25 @@ async def verify_stickiness():
         except: pass
 
 async def scan_cycle():
+    # 1. Pre-Scan Prep & Harvesting
     sync_baselines()
     load_from_csv()
+    harvest_saved_trades()
+    
+    # 2. Stickiness Verification
     await verify_stickiness()
     
+    # 3. Market Context
     macro = get_advanced_macro()
     sectors = get_sector_etf_performance()
-    
-    # Read watchlist with sector info
     watchlist_df = pd.read_csv(WATCHLIST_FILE).head(MAX_TICKERS)
     
     all_raw_alerts = []
     for _, row in watchlist_df.iterrows():
-        ticker = row['ticker']
-        sector = row['sector']
-        alerts_data = await process_ticker_sequential(ticker, sector)
+        alerts_data = await process_ticker_sequential(row['ticker'], row['sector'])
         all_raw_alerts.extend(alerts_data)
         time.sleep(random.uniform(3, 5))
 
-    # Correlation Scorer (Clusters & Multi-Leg)
     just_trades = [a['trade'] for a in all_raw_alerts]
     final_trades = process_results(just_trades, macro, sectors)
 
