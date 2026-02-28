@@ -5,12 +5,32 @@ import time
 import logging
 from datetime import datetime
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from config import CLOUDFLARE_PROXY_URL
 
-# Persistent Session for connection reuse
+# --- Cloudflare Bridge Adapter ---
+# This intercepts all requests to Yahoo and sends them through your Worker
+class CloudflareAdapter(requests.adapters.HTTPAdapter):
+    def __init__(self, proxy_url, *args, **kwargs):
+        self.proxy_url = proxy_url.rstrip('/')
+        super().__init__(*args, **kwargs)
+
+    def send(self, request, **kwargs):
+        if "query1.finance.yahoo.com" in request.url:
+            # Replace the Yahoo hostname with your Cloudflare Worker URL
+            request.url = request.url.replace("https://query1.finance.yahoo.com", self.proxy_url)
+        return super().send(request, **kwargs)
+
+# Setup the Session with the Bridge
 session = requests.Session()
 session.headers.update({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 })
+
+if CLOUDFLARE_PROXY_URL:
+    adapter = CloudflareAdapter(CLOUDFLARE_PROXY_URL)
+    session.mount("https://query1.finance.yahoo.com", adapter)
+    logging.info(f"Cloudflare Bridge Active: {CLOUDFLARE_PROXY_URL}")
+# ---------------------------------
 
 def get_stock_info(ticker):
     """Fetches just the stock price and volume (Fast/Light)."""
