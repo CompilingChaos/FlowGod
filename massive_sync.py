@@ -5,7 +5,7 @@ import numpy as np
 import logging
 from datetime import datetime, timedelta
 from config import MASSIVE_API_KEY, ALPHA_VANTAGE_API_KEY, WATCHLIST_FILE, BASELINE_DAYS
-from historical_db import update_ticker_baseline
+from historical_db import update_ticker_baseline, needs_baseline_update
 
 def sync_baselines():
     try:
@@ -14,13 +14,20 @@ def sync_baselines():
         logging.error(f"Failed to read watchlist: {e}")
         return
 
-    logging.info(f"Starting Multi-Source Baseline Sync (Massive + Alpha Vantage)...")
+    # Check which tickers actually need updating
+    tickers_to_sync = [t for t in watchlist if needs_baseline_update(t)]
+    
+    if not tickers_to_sync:
+        logging.info("All ticker baselines are up to date for today. Skipping sync.")
+        return
+
+    logging.info(f"Syncing {len(tickers_to_sync)}/{len(watchlist)} tickers (Once-per-day logic)...")
     
     # Massive.com Window (Shifted back 3 days for free tier)
     end_date = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=63)).strftime('%Y-%m-%d') 
 
-    for i, ticker in enumerate(watchlist):
+    for i, ticker in enumerate(tickers_to_sync):
         try:
             # OPTION 1: Non-US Ticker (Use Alpha Vantage)
             if "." in ticker:

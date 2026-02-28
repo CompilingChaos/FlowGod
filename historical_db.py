@@ -47,6 +47,20 @@ def get_ticker_baseline(ticker):
     finally:
         conn.close()
 
+def needs_baseline_update(ticker):
+    """Checks if the ticker baseline was updated today."""
+    conn = init_db()
+    if not conn: return True
+    try:
+        res = conn.execute("SELECT last_updated FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
+        if not res: return True
+        
+        last_updated = datetime.fromisoformat(res[0]).date()
+        today = datetime.now().date()
+        return last_updated < today
+    finally:
+        conn.close()
+
 def load_from_csv():
     if os.path.exists(HISTORICAL_CSV):
         try:
