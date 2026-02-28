@@ -123,6 +123,8 @@ def classify_aggression(last_price, bid, ask):
 def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_vel=0.0, earnings_date=None):
     if df.empty: return pd.DataFrame()
     skew, contango, vol_bias = calculate_volatility_surface(df)
+    
+    # Defensive Baseline Retrieval
     baseline = get_ticker_baseline(ticker)
     trust_mult = baseline.get('trust_score', 1.0) if baseline else 1.0
     avg_social = baseline.get('avg_social_vel', 0.0) if baseline else 0.0
@@ -159,8 +161,6 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
         agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
         hvn_conv, hvn_label = calculate_hvn_conviction(candle_df, row['side'].upper(), spot)
         iv = row.get('impliedVolatility', 0)
-        
-        # Defensive check for expiration date
         expiration = row.get('exp') or row.get('expiration') or "N/A"
         
         is_cheap_put = (row['side'] == 'puts') and (iv < 0.45) 
@@ -176,7 +176,6 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
         if abs(spot - call_wall) / spot < 0.01: score -= 30
         if (vol_bias == "BULLISH" and row['side'] == 'calls') or (vol_bias == "BEARISH" and row['side'] == 'puts'): score += 40
         
-        # WEEKLY CAMPAIGN BONUS
         campaign_count = weekly_calls if row['side'] == 'calls' else weekly_puts
         if campaign_count >= 3: score += 40
         if campaign_count >= 5: score += 60
@@ -193,7 +192,7 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
                 'skew': skew, 'bias': vol_bias, 'score': score, 'trend_prob': trend_p,
                 'aggression': f"{agg_label} | {micro_label} | {hvn_label}",
                 'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
-                'hype_z': round((social_vel / (baseline.get('avg_social_vel', 0)+0.1)) if baseline.get('avg_social_vel', 0) > 0 else 0, 1),
+                'hype_z': round(hype_z, 1),
                 'earnings_dte': days_to_earnings, 'weekly_count': campaign_count,
                 'detection_reason': f"Score {score} | {hvn_label} | {'CAMPAIGN' if campaign_count >= 3 else vol_bias}"
             })
