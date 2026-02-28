@@ -27,6 +27,7 @@ TICKER DATA:
 Volume: {trade['volume']} (vs normal {trade['rel_vol']}x)
 Stock Heat (Z-Score): {trade['stock_z']}
 Aggression: {trade['aggression']} (Price: ${trade['premium']} vs Bid: ${trade['bid']} / Ask: ${trade['ask']})
+Delta: {trade['delta']} | Gamma: {trade['gamma']} | GEX: ${trade['gex']:,}
 Notional Value: ${trade['notional']:,}
 Option Z-Score: {trade['z_score']}
 IV: {trade['iv']*100:.1f}%
@@ -42,23 +43,22 @@ SCORING RUBRIC (Each category is 0-20 points):
 2. VOL/OI: 20pts if Vol > OI, 10pts if Vol > 0.5*OI.
 3. AGGRESSION: 20pts if 'Sweep/Ask', 10pts if above mid-point.
 4. MACRO ALIGNMENT: 20pts if trade direction matches divergence (e.g. Bullish while DXY/TNX dropping).
-5. URGENCY: 20pts if DTE < 14 days, 10pts if < 45 days.
+5. GREEKS/URGENCY: 20pts if High Gamma (>0.05) or ATM Delta (0.45-0.55).
 
 RESPONSE SCHEMA (JSON ONLY):
 {{
   "is_unusual": boolean,
   "confidence_score": integer (Sum of the 5 rubric points, 0-100),
-  "rubric_breakdown": {{ "size": int, "vol_oi": int, "aggression": int, "macro": int, "urgency": int }},
+  "rubric_breakdown": {{ "size": int, "vol_oi": int, "aggression": int, "macro": int, "greeks": int }},
   "sentiment": "BULLISH" | "BEARISH" | "NEUTRAL",
   "category": "Aggressive Accumulation" | "Strategic Hedge" | "Speculative Lottery" | "Routine Flow",
   "analysis": "Standard institutional sentence",
-  "divergence": "Describe any macro/stock divergence"
+  "divergence": "Describe any macro/stock divergence (e.g. Gamma Squeeze potential)"
 }}"""
 
         response = model.generate_content(prompt)
         text = response.text.strip()
         
-        # Clean potential markdown
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0].strip()
         elif "```" in text:
@@ -74,7 +74,7 @@ RESPONSE SCHEMA (JSON ONLY):
         return None
 
 async def send_alert(trade, ticker_context="", macro_context=None):
-    """Sends detailed rubric-based alert to Telegram."""
+    """Sends detailed structured alert with Greeks."""
     ai = get_ai_summary(trade, ticker_context, macro_context)
     
     if ai == "SKIP_ALERT":
@@ -95,6 +95,10 @@ Aggression: {trade['aggression']}
 Vol: {trade['volume']:,} | Notional: ${trade['notional']:,}
 Premium: ${trade['premium']} | IV: {trade['iv']*100:.1f}%
 
+📐 GREEKS & PRESSURE:
+Delta: {trade['delta']} | Gamma: {trade['gamma']}
+GEX (Dealer Hedge): ${trade['gex']:,}
+
 🔥 HEAT SCORING:
 Whale Score: {trade['score']}
 Option Z: {trade['z_score']} | RelVol: {trade['rel_vol']}x
@@ -107,7 +111,7 @@ DXY: {m['dxy']}% | TNX: {m['tnx']}%
 
 🧠 AI ANALYST (Rubric Breakdown):
 Size: {rb.get('size',0)} | Vol/OI: {rb.get('vol_oi',0)} | Agg: {rb.get('aggression',0)}
-Macro: {rb.get('macro',0)} | Urgency: {rb.get('urgency',0)}
+Macro: {rb.get('macro',0)} | Greeks: {rb.get('greeks',0)}
 
 Category: {ai['category'] if ai else 'Unknown'}
 Analysis: {ai['analysis'] if ai else 'N/A'}
