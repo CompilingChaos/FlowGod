@@ -1,59 +1,57 @@
-ticker
-RHM.DE
-NBIS
-IREN
-ABCL
-NFLX
-SOFI
-HOOD
-ASTS
-RKLB
-PLTR
-TSLA
-NVDA
-AMD
-MU
-MSFT
-AAPL
-AMZN
-META
-GOOGL
-AVGO
-ARM
-MSTR
-COIN
-RIOT
-MARA
-BITF
-WULF
-GME
-DJT
-SNAP
-TLRY
-PATH
-BBAI
-LCID
-GM
-BYD
-PYPL
-DELL
-INTC
-TSM
-ASML
-MRVL
-QCOM
-DIS
-WBD
-TMUS
-JPM
-SPY
-QQQ
-TTWO
-IONQ
-RGTI
-LLY
-NVO
-VKTX
-REGN
-MRNA
-BNTX
+ticker,sector
+AAPL,Mag 7 / Tech Giants
+MSFT,Mag 7 / Tech Giants
+GOOGL,Mag 7 / Tech Giants
+META,Mag 7 / Tech Giants
+AMZN,Mag 7 / Tech Giants
+NFLX,Mag 7 / Tech Giants
+TSLA,Mag 7 / Tech Giants
+NVDA,AI & Semiconductors
+AMD,AI & Semiconductors
+AVGO,AI & Semiconductors
+ARM,AI & Semiconductors
+MU,AI & Semiconductors
+INTC,AI & Semiconductors
+TSM,AI & Semiconductors
+ASML,AI & Semiconductors
+MRVL,AI & Semiconductors
+QCOM,AI & Semiconductors
+DELL,AI & Semiconductors
+PLTR,AI & Semiconductors
+PATH,AI & Semiconductors
+BBAI,AI & Semiconductors
+MSTR,Crypto Proxies
+COIN,Crypto Proxies
+RIOT,Crypto Proxies
+MARA,Crypto Proxies
+BITF,Crypto Proxies
+WULF,Crypto Proxies
+RKLB,Space & Defense
+ASTS,Space & Defense
+RHM.DE,Space & Defense
+LLY,Pharma & Biotech
+NVO,Pharma & Biotech
+VKTX,Pharma & Biotech
+REGN,Pharma & Biotech
+MRNA,Pharma & Biotech
+BNTX,Pharma & Biotech
+ABCL,Pharma & Biotech
+PYPL,Fintech & Financials
+SOFI,Fintech & Financials
+HOOD,Fintech & Financials
+JPM,Fintech & Financials
+GME,Retail / High Beta
+DJT,Retail / Beta / Sentiment
+SNAP,Retail / Beta / Sentiment
+TTWO,Gaming
+TLRY,Cannabis
+LCID,EV / Automotive
+GM,EV / Automotive
+BYD,EV / Automotive
+IONQ,Quantum Computing
+RGTI,Quantum Computing
+SPY,Indices & ETFs
+QQQ,Indices & ETFs
+NBIS,Biotech
+IREN,AI Infrastructure
+BTMW,Other

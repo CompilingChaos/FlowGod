@@ -16,17 +16,20 @@ from historical_db import (
 from config import WATCHLIST_FILE, MAX_TICKERS, MIN_STOCK_Z_SCORE
 from massive_sync import sync_baselines
 
-async def process_ticker_sequential(ticker):
+async def process_ticker_sequential(ticker, sector_from_csv):
     """Sequential worker function."""
     try:
-        logging.info(f"Scanning {ticker}...")
+        logging.info(f"Scanning {ticker} ({sector_from_csv})...")
         stock_data = get_stock_info(ticker)
         price = stock_data['price']
         stock_vol = stock_data['volume']
         
         if price == 0 or stock_vol == 0: return []
 
-        stock_z, sector = get_stock_heat(ticker, stock_vol)
+        stock_z, sector_from_db = get_stock_heat(ticker, stock_vol)
+        # Use CSV sector as primary truth, fallback to DB
+        sector = sector_from_csv if sector_from_csv != "Unknown" else sector_from_db
+        
         is_hot = stock_z > 1.0 
         always_scan = ticker in ['SPY', 'QQQ', 'TSLA', 'NVDA', 'AAPL']
         
@@ -57,7 +60,7 @@ async def process_ticker_sequential(ticker):
 async def verify_stickiness():
     unconfirmed = get_unconfirmed_alerts()
     if not unconfirmed: return
-    logging.info(f"Verifying {len(unconfirmed)} past alerts...")
+    logging.info(f"Verifying stickiness for {len(unconfirmed)} past alerts...")
     for contract, yest_vol, yest_oi in unconfirmed:
         try:
             live_oi = get_contract_oi(contract)
@@ -84,11 +87,15 @@ async def scan_cycle():
     
     macro = get_advanced_macro()
     sectors = get_sector_etf_performance()
-    watchlist = pd.read_csv(WATCHLIST_FILE)['ticker'].tolist()[:MAX_TICKERS]
+    
+    # Read watchlist with sector info
+    watchlist_df = pd.read_csv(WATCHLIST_FILE).head(MAX_TICKERS)
     
     all_raw_alerts = []
-    for ticker in watchlist:
-        alerts_data = await process_ticker_sequential(ticker)
+    for _, row in watchlist_df.iterrows():
+        ticker = row['ticker']
+        sector = row['sector']
+        alerts_data = await process_ticker_sequential(ticker, sector)
         all_raw_alerts.extend(alerts_data)
         time.sleep(random.uniform(3, 5))
 

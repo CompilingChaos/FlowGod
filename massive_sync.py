@@ -17,7 +17,10 @@ yf_session.headers.update({
 
 def sync_baselines():
     try:
-        watchlist = pd.read_csv(WATCHLIST_FILE)['ticker'].tolist()
+        # Read new CSV format: ticker,sector
+        watchlist_df = pd.read_csv(WATCHLIST_FILE)
+        watchlist = watchlist_df['ticker'].tolist()
+        ticker_to_sector = dict(zip(watchlist_df['ticker'], watchlist_df['sector']))
     except Exception as e:
         logging.error(f"Failed to read watchlist: {e}")
         return
@@ -37,6 +40,8 @@ def sync_baselines():
 
     for i, ticker in enumerate(tickers_to_sync):
         try:
+            sector = ticker_to_sector.get(ticker, "Unknown")
+            
             # OPTION 1: Non-US Ticker (Use Alpha Vantage)
             if "." in ticker:
                 if not ALPHA_VANTAGE_API_KEY:
@@ -56,11 +61,13 @@ def sync_baselines():
                     if len(volumes) > 5:
                         avg_vol = np.mean(volumes)
                         std_dev = np.std(volumes)
-                        # Fetch sector info
-                        sector = "Unknown"
-                        try:
-                            sector = yf.Ticker(ticker, session=yf_session).info.get('sector', 'Unknown')
-                        except: pass
+                        
+                        # If sector is Unknown in CSV, try fetching it
+                        if sector == "Unknown":
+                            try:
+                                sector = yf.Ticker(ticker, session=yf_session).info.get('sector', 'Unknown')
+                            except: pass
+                            
                         update_ticker_baseline(ticker, avg_vol, std_dev, sector)
                         logging.info(f"Updated {ticker} (AlphaV): Avg Vol {avg_vol:,.0f}, Sector: {sector}")
                     else:
@@ -88,11 +95,13 @@ def sync_baselines():
                     if len(volumes) > 5:
                         avg_vol = np.mean(volumes)
                         std_dev = np.std(volumes)
-                        # Fetch sector info
-                        sector = "Unknown"
-                        try:
-                            sector = yf.Ticker(ticker, session=yf_session).info.get('sector', 'Unknown')
-                        except: pass
+                        
+                        # If sector is Unknown in CSV, try fetching it
+                        if sector == "Unknown":
+                            try:
+                                sector = yf.Ticker(ticker, session=yf_session).info.get('sector', 'Unknown')
+                            except: pass
+                            
                         update_ticker_baseline(ticker, avg_vol, std_dev, sector)
                         logging.info(f"Updated {ticker} (Massive): Avg Vol {avg_vol:,.0f}, Sector: {sector}")
                     else:
