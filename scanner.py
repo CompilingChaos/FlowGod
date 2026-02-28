@@ -13,18 +13,30 @@ def get_stock_heat(ticker, live_vol):
         return z_score, baseline.get('sector', 'Unknown')
     return 0, "Unknown"
 
-def calculate_greeks(S, K, T, r, sigma, option_type='calls'):
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0, 0, 0, 0
+def calculate_color(S, K, T, r, sigma, option_type='calls'):
+    """Third-order Greek: Derivative of Gamma wrt Time. Measures decay velocity."""
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0.0
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
         d2 = d1 - sigma * math.sqrt(T)
-        if option_type == 'calls': delta = norm.cdf(d1)
-        else: delta = norm.cdf(d1) - 1
+        nd1 = norm.pdf(d1)
+        term1 = -nd1 / (2 * S * T * sigma * math.sqrt(T))
+        term2 = 1 + (2 * r * T * d1 - d2 * sigma * math.sqrt(T)) / (sigma * math.sqrt(T))
+        return round(term1 * term2, 6)
+    except: return 0.0
+
+def calculate_greeks(S, K, T, r, sigma, option_type='calls'):
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0, 0, 0, 0, 0
+    try:
+        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        d2 = d1 - sigma * math.sqrt(T)
+        delta = norm.cdf(d1) if option_type == 'calls' else norm.cdf(d1) - 1
         gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
         vanna = (norm.pdf(d1) * d2) / sigma
         charm = -norm.pdf(d1) * (r / (sigma * math.sqrt(T)) - d2 / (2 * T))
-        return round(delta, 3), round(gamma, 4), round(vanna, 4), round(charm, 4)
-    except: return 0, 0, 0, 0
+        color = calculate_color(S, K, T, r, sigma, option_type)
+        return round(delta, 3), round(gamma, 4), round(vanna, 4), round(charm, 4), color
+    except: return 0, 0, 0, 0, 0
 
 def calculate_volatility_surface(df):
     if df.empty: return 0, 0, "NEUTRAL"
@@ -45,10 +57,8 @@ def map_gex_walls(df):
                                  df['gamma'] * df['openInterest'] * 100 * df['underlying_price'],
                                  -df['gamma'] * df['openInterest'] * 100 * df['underlying_price'])
         strike_gex = df.groupby('strike')['net_gex'].sum()
-        call_wall = strike_gex.idxmax()
-        put_wall = strike_gex.idxmin()
-        strike_gex_sorted = strike_gex.sort_index()
-        flip = 0
+        call_wall, put_wall = strike_gex.idxmax(), strike_gex.idxmin()
+        flip, strike_gex_sorted = 0, strike_gex.sort_index()
         for i in range(len(strike_gex_sorted)-1):
             if np.sign(strike_gex_sorted.iloc[i]) != np.sign(strike_gex_sorted.iloc[i+1]):
                 flip = strike_gex_sorted.index[i]
@@ -70,7 +80,6 @@ def calculate_hvn_conviction(df_1m, t_type, spot):
     except: return 1.0, "N/A"
 
 def detect_icebergs(df_1m):
-    """Tier-3: Effort vs Result. Identifies massive limit orders absorbing volume."""
     if df_1m is None or len(df_1m) < 30: return False
     try:
         tr = (df_1m['High'] - df_1m['Low']).replace(0, 0.01)
@@ -98,13 +107,15 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
 
     for idx, row in df.iterrows():
         T = max(0.001, row['dte']) / 365.0
-        d, g, v, c = calculate_greeks(row['underlying_price'], row['strike'], T, 0.045, row['impliedVolatility'], row['side'])
-        df.at[idx, 'delta'], df.at[idx, 'gamma'], df.at[idx, 'vanna'], df.at[idx, 'charm'] = d, g, v, c
+        d, g, v, c, color = calculate_greeks(row['underlying_price'], row['strike'], T, 0.045, row['impliedVolatility'], row['side'])
+        df.at[idx, 'delta'], df.at[idx, 'gamma'], df.at[idx, 'vanna'], df.at[idx, 'charm'], df.at[idx, 'color'] = d, g, v, c, color
         df.at[idx, 'gex'] = g * row['openInterest'] * 100 * row['underlying_price']
+        df.at[idx, 'decay_vel'] = color * row['openInterest'] * 100
+
     call_wall, put_wall, flip = map_gex_walls(df)
+    total_decay_vel = int(df['decay_vel'].sum())
     spot = df.iloc[0]['underlying_price']
     
-    # Tier-3 Alpha Aggression
     trv_label, trv_bonus = "Standard Flow", 10
     if candle_df is not None:
         if detect_icebergs(candle_df): trv_label, trv_bonus = "Institutional ICEBERG", 65
@@ -133,11 +144,10 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
                 'oi': int(row['openInterest']), 'premium': round(row['lastPrice'], 2),
                 'notional': int(row['notional']), 'rel_vol': round(row['volume']/(get_stats(ticker, row['contractSymbol'])['avg_vol']+1), 1),
                 'delta': row['delta'], 'gamma': row['gamma'], 'vanna': row['vanna'], 'charm': row['charm'],
-                'gex': int(row['gex']), 'call_wall': call_wall, 'put_wall': put_wall, 'flip': flip,
+                'gex': int(row['gex']), 'decay_vel': total_decay_vel, 'call_wall': call_wall, 'put_wall': put_wall, 'flip': flip,
                 'skew': skew, 'bias': vol_bias, 'score': score, 'aggression': f"{agg_label} | {trv_label} | {hvn_label}",
                 'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
-                'hype_z': round(hype_z, 1),
-                'detection_reason': f"Score {score} | {hvn_label} | {vol_bias}"
+                'hype_z': round(hype_z, 1), 'detection_reason': f"Score {score} | {hvn_label} | {vol_bias}"
             })
     return pd.DataFrame(results)
 
@@ -145,7 +155,7 @@ def generate_system_verdict(trade):
     t_type, spot = trade['type'], trade.get('underlying_price', 0)
     call_wall, put_wall = trade.get('call_wall', 0), trade.get('put_wall', 0)
     skew, agg = trade.get('skew', 0), trade.get('aggression', "")
-    verdict, logic = "NEUTRAL", "Insufficient conviction."
+    verdict, logic = "NEUTRAL", "Low conviction."
     if "CALL" in t_type and "Aggressive" in agg:
         if skew < 0: verdict, logic = "CALL (Long)", "Aggressive sweep + Bullish Skew."
         elif spot > 0 and put_wall > 0 and (spot - put_wall) / spot < 0.02: verdict, logic = "CALL (Long)", "Support bounce at Put Wall."

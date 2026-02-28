@@ -18,28 +18,28 @@ def get_ai_summary(trade, ticker_context="", macro_context=None):
         rag_context = get_rag_context(trade['ticker'], trade['type'])
         sys_verdict, sys_logic = generate_system_verdict(trade)
 
-        prompt = f"""As an institutional flow expert, evaluate this trade.
+        prompt = f"""As an institutional flow expert, evaluate this trade and the structural hedging support.
 
 TICKER: {trade['ticker']} {trade['type']} {trade['strike']} | Exp: {trade['exp']}
 {macro_str}
 {rag_context}
 
-SOCIAL SENTIMENT:
-Hype Z-Score: {trade.get('hype_z', 0)} (High = Loud Retail FOMO, Low = Quiet Institutional Alpha)
+HYPE & SENTIMENT:
+Hype Z-Score: {trade.get('hype_z', 0)} (High = Retail FOMO, Low = Institutional Alpha)
 
-SYSTEM VERDICT: {sys_verdict}
-SYSTEM LOGIC: {sys_logic}
+GREEKS & DECAY:
+Delta: {trade['delta']} | Gamma: {trade['gamma']} | Vanna: {trade['vanna']} | Charm: {trade['charm']}
+Hedge Decay Velocity (Color): {trade.get('decay_vel', 0)} (Measures speed of hedging support loss)
+GEX Pressure: ${trade['gex']:,} | Gamma Flip Level: ${trade['flip']}
 
-TRADE SPECS:
-Vol: {trade['volume']} | Aggression: {trade['aggression']}
-Delta: {trade['delta']} | Gamma: {trade['gamma']} | GEX: ${trade['gex']:,}
+TECHNICALS:
 Volatility: Skew is {trade['skew']} ({trade['bias']} bias)
-Technicals: Call Wall: ${trade['call_wall']} | Put Wall: ${trade['put_wall']} | Flip: ${trade['flip']}
+Walls: Call Wall: ${trade['call_wall']} | Put Wall: ${trade['put_wall']}
 
 AI INSTRUCTIONS:
-1. Differentiate between quiet alpha and loud FOMO based on Hype Z-Score.
-2. Validate the SYSTEM VERDICT for Trade Republic (BUY, CALL, or PUT).
-3. Respond ONLY with JSON.
+1. Use 'Hedge Decay Velocity' to determine if the structural support for this move is accelerating or nearing a 'Decay Cliff'.
+2. Validate SYSTEM VERDICT: {sys_verdict} ({sys_logic}).
+3. Suggest duration and entry quality. Respond ONLY with JSON.
 
 RESPONSE SCHEMA:
 {{
@@ -48,7 +48,6 @@ RESPONSE SCHEMA:
   "final_verdict": "BUY" | "CALL" | "PUT" | "NEUTRAL",
   "estimated_duration": "string",
   "verdict_reasoning": "...",
-  "category": "...",
   "analysis": "..."
 }}"""
 
@@ -81,8 +80,9 @@ Type: {trade['type']} {trade['strike']} | Exp: {trade['exp']}
 Agg: {trade['aggression']}
 Vol: {trade['volume']:,} | Notional: ${trade['notional']:,}
 
-📐 GEX & WALLS:
+📐 GREEKS & VELOCITY:
 GEX Pressure: ${trade['gex']:,}
+Hedge Decay (Color): {trade.get('decay_vel', 0)}
 Call Wall: ${trade['call_wall']} | Put Wall: ${trade['put_wall']}
 Gamma Flip: ${trade['flip']}
 
@@ -90,7 +90,6 @@ Gamma Flip: ${trade['flip']}
 Hype Z-Score: {trade.get('hype_z', 0)} ({'LOUD/FOMO' if trade.get('hype_z',0) > 2 else 'QUIET/ALPHA'})
 
 🧠 AI ANALYST:
-Category: {ai['category'] if ai and 'category' in ai else 'Unknown'}
 Analysis: {ai['analysis'] if ai and 'analysis' in ai else 'N/A'}"""
 
     cb_data = f"save|{trade['ticker']}|{trade['type']}|{trade['strike']}|{trade['underlying_price']}"
