@@ -16,6 +16,7 @@ from historical_db import (
 from config import WATCHLIST_FILE, MAX_TICKERS, MIN_STOCK_Z_SCORE
 from massive_sync import sync_baselines
 from bot_listener import harvest_saved_trades
+from occ_auditor import audit_clearinghouse
 
 async def process_ticker_sequential(ticker, sector_from_csv):
     """Sequential worker function."""
@@ -35,14 +36,9 @@ async def process_ticker_sequential(ticker, sector_from_csv):
         df = get_option_chain_data(ticker, price, stock_vol, full_chain=True)
         if df.empty: return []
 
-        # Tier-3: Social Sentiment Fusion
-        social_vel = get_social_velocity(ticker)
-
         update_historical(ticker, df)
         context = get_ticker_context(ticker, days=2)
-
-        # Scorer now handles Surface, GEX Walls, TRV, and Social Hype
-        flags = score_unusual(df, ticker, stock_z, sector, candle, social_vel)
+        flags = score_unusual(df, ticker, stock_z, sector, candle)
 
         trades_to_alert = []
         for _, trade in flags.iterrows():
@@ -76,15 +72,18 @@ async def verify_stickiness():
         except: pass
 
 async def scan_cycle():
-    # 1. Pre-Scan Prep & Harvesting
+    # 1. Institutional Audit (Nightly OCC Check)
+    audit_clearinghouse()
+
+    # 2. Pre-Scan Prep & Harvesting
     sync_baselines()
     load_from_csv()
     harvest_saved_trades()
     
-    # 2. Stickiness Verification
+    # 3. Stickiness Verification
     await verify_stickiness()
     
-    # 3. Market Context
+    # 4. Market Context
     macro = get_advanced_macro()
     sectors = get_sector_etf_performance()
     watchlist_df = pd.read_csv(WATCHLIST_FILE).head(MAX_TICKERS)
