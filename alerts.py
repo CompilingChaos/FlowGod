@@ -12,7 +12,7 @@ def get_ai_summary(trade):
         
     try:
         genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-3-flash")
         
         prompt = f"""As a whale trade analyst, analyze this option trade in ONE SHORT sentence:
 {trade['ticker']} {trade['type']} {trade['strike']} exp {trade['exp']} 
