@@ -37,5 +37,5 @@ MIN_VOLUME = 300
 MIN_NOTIONAL = 15000
 MIN_VOL_OI_RATIO = 6.0
 MIN_RELATIVE_VOL = 4.0
-MAX_TICKERS = 50 
+MAX_TICKERS = 150 
 # ------------------------------------
