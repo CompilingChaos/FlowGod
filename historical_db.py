@@ -15,10 +15,12 @@ def init_db():
         # Options History
         conn.execute('''CREATE TABLE IF NOT EXISTS hist_vol_oi 
                      (ticker TEXT, contract TEXT, date TEXT, volume INTEGER, oi INTEGER)''')
-        # Alert Tracking (Vector 5 Refined)
+        # Alert Tracking (Vector 5 + RAG Memory)
         conn.execute('''CREATE TABLE IF NOT EXISTS alerts_sent 
                      (contract TEXT PRIMARY KEY, timestamp TEXT, 
-                      alert_vol INTEGER, alert_oi INTEGER,
+                      ticker TEXT, type TEXT,
+                      alert_vol INTEGER, alert_oi INTEGER, 
+                      underlying_price REAL, outcome_3d REAL,
                       confirmed INTEGER DEFAULT 0)''')
         # Stock Baselines
         conn.execute('''CREATE TABLE IF NOT EXISTS ticker_stats 
@@ -36,7 +38,6 @@ def update_ticker_baseline(ticker, avg_vol, std_dev, sector="Unknown"):
     try:
         res = conn.execute("SELECT trust_score FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
         current_trust = res[0] if res else 1.0
-        
         conn.execute("""INSERT OR REPLACE INTO ticker_stats 
                      (ticker, avg_vol, std_dev, sector, trust_score, last_updated) 
                      VALUES (?, ?, ?, ?, ?, ?)""",
@@ -67,17 +68,41 @@ def update_trust_score(ticker, change):
     finally:
         conn.close()
 
-def mark_alert_sent(contract, vol=0, oi=0):
+def mark_alert_sent(contract, ticker="", trade_type="", vol=0, oi=0, price=0):
     conn = init_db()
     if not conn: return
     try:
         conn.execute("""INSERT OR REPLACE INTO alerts_sent 
-                     (contract, timestamp, alert_vol, alert_oi, confirmed) 
-                     VALUES (?, ?, ?, ?, 0)""",
-                     (contract, datetime.now().isoformat(), vol, oi))
+                     (contract, timestamp, ticker, type, alert_vol, alert_oi, underlying_price, confirmed) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, 0)""",
+                     (contract, datetime.now().isoformat(), ticker, trade_type, vol, oi, price))
         conn.commit()
     finally:
         conn.close()
+
+def get_rag_context(ticker, trade_type):
+    """Retrieves historical win-rate for similar trades on this ticker."""
+    conn = init_db()
+    if not conn: return "No historical precedent."
+    try:
+        query = """
+            SELECT underlying_price, outcome_3d 
+            FROM alerts_sent 
+            WHERE ticker = ? AND type = ? AND outcome_3d IS NOT NULL
+            ORDER BY timestamp DESC LIMIT 10
+        """
+        df = pd.read_sql_query(query, conn, params=(ticker, trade_type))
+        conn.close()
+        if df.empty:
+            return "First time seeing high-conviction flow for this ticker/type."
+        if trade_type == 'CALLS':
+            win_rate = (df['outcome_3d'] > 0).mean()
+        else:
+            win_rate = (df['outcome_3d'] < 0).mean()
+        avg_move = df['outcome_3d'].mean() * 100
+        return f"RAG PRECEDENT: Last 10 similar {trade_type} on {ticker} had a {win_rate:.0%} win rate. Avg 3-day move: {avg_move:.1f}%."
+    except:
+        return "Memory system unavailable."
 
 def get_unconfirmed_alerts():
     conn = init_db()
@@ -133,7 +158,7 @@ def save_to_csv():
 
 def get_ticker_context(ticker, days=2):
     conn = init_db()
-    if not conn: return "No historical context available."
+    if not conn: return "No historical context."
     cutoff = (datetime.now() - timedelta(days=days)).date().isoformat()
     query = """
         SELECT date, SUM(volume) as total_vol, SUM(oi) as total_oi 
@@ -149,7 +174,6 @@ def get_ticker_context(ticker, days=2):
             context_str += f"- {row['date']}: Vol {row['total_vol']:,}, OI {row['total_oi']:,}\n"
         return context_str
     except Exception as e:
-        logging.error(f"Context retrieval failed: {e}")
         return "Context unavailable."
 
 def update_historical(ticker, chain_df):
@@ -183,7 +207,6 @@ def get_stats(ticker, contract, days=30):
         std_dev = math.sqrt(max(0, row['variance']))
         return {'avg_vol': row['avg_vol'], 'avg_oi': row['avg_oi'], 'std_dev': std_dev}
     except Exception as e:
-        logging.error(f"Stats query failed: {e}")
         return {'avg_vol': 0, 'avg_oi': 0, 'std_dev': 0}
 
 def is_alert_sent(contract):
