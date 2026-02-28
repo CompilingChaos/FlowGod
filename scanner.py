@@ -1,26 +1,45 @@
 import pandas as pd
-from historical_db import get_avg_vol_oi
+from historical_db import get_stats
 from config import MIN_VOLUME, MIN_NOTIONAL, MIN_VOL_OI_RATIO, MIN_RELATIVE_VOL
 
 def score_unusual(df, ticker):
     results = []
     for _, row in df.iterrows():
         contract = row['contractSymbol']
-        avg = get_avg_vol_oi(ticker, contract)
-        rel_vol = row['volume'] / (avg['avg_vol'] + 1)
+        stats = get_stats(ticker, contract)
+        
+        avg_vol = stats['avg_vol']
+        std_dev = stats['std_dev']
+        
+        # 1. Calculate Relative Volume and Z-Score
+        rel_vol = row['volume'] / (avg_vol + 1)
+        z_score = (row['volume'] - avg_vol) / (std_dev + 1) if std_dev > 0 else 0
+        
+        # 2. Implied Volatility (IV) Analysis
+        iv = row.get('impliedVolatility', 0)
         
         score = 0
-        if row['volume'] > 1000: score += 30
-        if row['notional'] > 100000: score += 40
+        if row['volume'] > 1000: score += 20
+        if row['notional'] > 250000: score += 50
         if row['vol_oi_ratio'] > 15: score += 30
-        if rel_vol > 10: score += 50
-        if row['dte'] < 45 and row['moneyness'] < 15: score += 20
+        if rel_vol > 10: score += 40
+        if z_score > 3: score += 60  # High Statistical Anomaly
+        if row['dte'] < 30 and row['moneyness'] < 10: score += 20 # Near-term ATM conviction
         
-        if (row['volume'] >= MIN_VOLUME and 
-            row['notional'] >= MIN_NOTIONAL and 
-            row['vol_oi_ratio'] >= MIN_VOL_OI_RATIO and 
-            rel_vol >= MIN_RELATIVE_VOL):
-            
+        # Unusual IV Spike (if IV is significantly above typical levels, e.g., > 1.0/100%)
+        if iv > 0.8: score += 20 
+
+        # 3. Filtering Logic (Anomaly Detection)
+        # We trigger if it meets hard thresholds OR it's a massive statistical outlier (z > 3.5)
+        is_whale = (
+            (row['volume'] >= MIN_VOLUME and 
+             row['notional'] >= MIN_NOTIONAL and 
+             row['vol_oi_ratio'] >= MIN_VOL_OI_RATIO and 
+             rel_vol >= MIN_RELATIVE_VOL) or
+            (z_score > 3.5 and row['notional'] > 50000)
+        )
+
+        if is_whale:
             results.append({
                 'ticker': ticker,
                 'contract': row['contractSymbol'],
@@ -33,7 +52,10 @@ def score_unusual(df, ticker):
                 'notional': int(row['notional']) if not pd.isna(row['notional']) else 0,
                 'vol_oi': round(row['vol_oi_ratio'], 1) if not pd.isna(row['vol_oi_ratio']) else 0,
                 'rel_vol': round(rel_vol, 1) if not pd.isna(rel_vol) else 0,
-                'score': score,
+                'z_score': round(z_score, 1),
+                'iv': round(iv, 2),
+                'score': int(score),
                 'bullish': row['side'] == 'calls'
             })
+            
     return pd.DataFrame(results)

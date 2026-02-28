@@ -34,7 +34,8 @@ async def send_alert(trade):
     msg = f"""🚨 WHALE ALERT 🚨
 {trade['ticker']} {trade['type']} {trade['strike']} {trade['exp']}
 Vol: {trade['volume']} • Notional: ${trade['notional']:,}
-Score: {trade['score']} • RelVol: {trade['rel_vol']}x • Premium: ${trade['premium']}
+Score: {trade['score']} • RelVol: {trade['rel_vol']}x • Z: {trade['z_score']}
+IV: {trade['iv']*100:.1f}% • Premium: ${trade['premium']}
 {ai_msg}"""
 
     try:

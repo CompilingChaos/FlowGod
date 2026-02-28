@@ -1,6 +1,7 @@
 import sqlite3
 import pandas as pd
 import os
+import math
 from datetime import datetime, timedelta
 from config import DB_FILE
 
@@ -21,18 +22,15 @@ def load_from_csv():
             df = pd.read_csv(HISTORICAL_CSV)
             conn = init_db()
             df.to_sql('hist_vol_oi', conn, if_exists='replace', index=False)
-            print(f"Loaded {len(df)} historical records from CSV.")
         except Exception as e:
             print(f"Error loading CSV: {e}")
 
 def save_to_csv():
     conn = init_db()
     try:
-        # Keep only last 60 days in CSV to keep it lean
         cutoff = (datetime.now() - timedelta(days=60)).date().isoformat()
         df = pd.read_sql_query("SELECT * FROM hist_vol_oi WHERE date >= ?", conn, params=(cutoff,))
         df.to_csv(HISTORICAL_CSV, index=False)
-        print(f"Saved {len(df)} historical records to CSV.")
     except Exception as e:
         print(f"Error saving CSV: {e}")
 
@@ -47,14 +45,32 @@ def update_historical(ticker, chain_df):
                      (ticker, contract, today, vol, oi))
     conn.commit()
 
-def get_avg_vol_oi(ticker, contract, days=30):
+def get_stats(ticker, contract, days=30):
+    """Returns avg volume, avg oi, and volume standard deviation."""
     conn = init_db()
     cutoff = (datetime.now() - timedelta(days=days)).date().isoformat()
-    df = pd.read_sql_query(
-        "SELECT AVG(volume) as avg_vol, AVG(oi) as avg_oi FROM hist_vol_oi "
-        "WHERE ticker=? AND contract=? AND date >= ?", 
-        conn, params=(ticker, contract, cutoff))
-    return df.iloc[0] if not df.empty else pd.Series({'avg_vol': 0, 'avg_oi': 0})
+    
+    # SQLite math: variance = avg(x^2) - avg(x)^2
+    query = """
+        SELECT 
+            AVG(volume) as avg_vol, 
+            AVG(oi) as avg_oi,
+            AVG(volume * volume) - (AVG(volume) * AVG(volume)) as variance
+        FROM hist_vol_oi 
+        WHERE ticker=? AND contract=? AND date >= ?
+    """
+    df = pd.read_sql_query(query, conn, params=(ticker, contract, cutoff))
+    
+    if df.empty or df.iloc[0]['avg_vol'] is None:
+        return {'avg_vol': 0, 'avg_oi': 0, 'std_dev': 0}
+        
+    row = df.iloc[0]
+    std_dev = math.sqrt(max(0, row['variance']))
+    return {
+        'avg_vol': row['avg_vol'],
+        'avg_oi': row['avg_oi'],
+        'std_dev': std_dev
+    }
 
 def is_alert_sent(contract):
     conn = init_db()
