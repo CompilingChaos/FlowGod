@@ -6,6 +6,8 @@ import logging
 from datetime import datetime, timedelta
 from config import MASSIVE_API_KEY, ALPHA_VANTAGE_API_KEY, WATCHLIST_FILE, BASELINE_DAYS
 from historical_db import update_ticker_baseline, needs_baseline_update
+from data_fetcher import get_social_velocity
+from error_reporter import notify_error_sync
 
 import yfinance as yf
 
@@ -17,107 +19,74 @@ yf_session.headers.update({
 
 def sync_baselines():
     try:
-        # Read new CSV format: ticker,sector
         watchlist_df = pd.read_csv(WATCHLIST_FILE)
         watchlist = watchlist_df['ticker'].tolist()
         ticker_to_sector = dict(zip(watchlist_df['ticker'], watchlist_df['sector']))
     except Exception as e:
-        logging.error(f"Failed to read watchlist: {e}")
+        msg = f"Failed to read watchlist: {e}"
+        logging.error(msg)
+        notify_error_sync("MASSIVE_SYNC", e, msg)
         return
 
-    # Check which tickers actually need updating
     tickers_to_sync = [t for t in watchlist if needs_baseline_update(t)]
-    
     if not tickers_to_sync:
-        logging.info("All ticker baselines are up to date for today. Skipping sync.")
+        logging.info("All ticker baselines up to date.")
         return
 
-    logging.info(f"Syncing {len(tickers_to_sync)}/{len(watchlist)} tickers (Once-per-day logic)...")
-    
-    # Massive.com Window (Shifted back 3 days for free tier)
+    logging.info(f"Syncing {len(tickers_to_sync)} tickers (Social + Volume)...")
     end_date = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=63)).strftime('%Y-%m-%d') 
 
     for i, ticker in enumerate(tickers_to_sync):
         try:
             sector = ticker_to_sector.get(ticker, "Unknown")
+            social_vel = get_social_velocity(ticker)
             
-            # OPTION 1: Non-US Ticker (Use Alpha Vantage)
+            # OPTION 1: Non-US Ticker (Alpha Vantage)
             if "." in ticker:
-                if not ALPHA_VANTAGE_API_KEY:
-                    logging.warning(f"No ALPHA_VANTAGE_API_KEY for {ticker}. Skipping.")
-                    continue
-
-                logging.info(f"Syncing non-US ticker {ticker} via Alpha Vantage...")
+                if not ALPHA_VANTAGE_API_KEY: continue
                 url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&apikey={ALPHA_VANTAGE_API_KEY}"
-                
                 response = requests.get(url)
                 data = response.json()
-
                 if "Time Series (Daily)" in data:
                     time_series = data["Time Series (Daily)"]
                     volumes = [int(v['5. volume']) for k, v in list(time_series.items())[:BASELINE_DAYS]]
-                    
                     if len(volumes) > 5:
                         avg_vol = np.mean(volumes)
                         std_dev = np.std(volumes)
-                        
-                        # If sector is Unknown in CSV, try fetching it
                         if sector == "Unknown":
-                            try:
-                                sector = yf.Ticker(ticker, session=yf_session).info.get('sector', 'Unknown')
+                            try: sector = yf.Ticker(ticker, session=yf_session).info.get('sector', 'Unknown')
                             except: pass
-                            
-                        update_ticker_baseline(ticker, avg_vol, std_dev, sector)
-                        logging.info(f"Updated {ticker} (AlphaV): Avg Vol {avg_vol:,.0f}, Sector: {sector}")
-                    else:
-                        logging.warning(f"Not enough data for {ticker} (AlphaV)")
-                else:
-                    err = data.get("Note") or data.get("Error Message") or f"Unknown AlphaV Error: {data}"
-                    logging.error(f"Alpha Vantage failed for {ticker}: {err}")
-                
+                        update_ticker_baseline(ticker, avg_vol, std_dev, sector, social_vel)
+                        logging.info(f"Updated {ticker} (AlphaV) | Social: {social_vel}")
                 time.sleep(15)
                 continue
 
-            # OPTION 2: US Ticker (Use Massive.com)
-            if not MASSIVE_API_KEY:
-                logging.warning(f"No MASSIVE_API_KEY for {ticker}. Skipping.")
-                continue
-
+            # OPTION 2: US Ticker (Massive.com)
+            if not MASSIVE_API_KEY: continue
             url = f"https://api.massive.com/v2/aggs/ticker/{ticker}/range/1/day/{start_date}/{end_date}?adjusted=true&sort=desc&limit={BASELINE_DAYS}&apiKey={MASSIVE_API_KEY}"
-            
             response = requests.get(url)
             data = response.json()
-
             if response.status_code == 200 and data.get('status') == 'OK':
                 if 'results' in data and len(data['results']) > 0:
                     volumes = [day['v'] for day in data['results']]
                     if len(volumes) > 5:
                         avg_vol = np.mean(volumes)
                         std_dev = np.std(volumes)
-                        
-                        # If sector is Unknown in CSV, try fetching it
                         if sector == "Unknown":
-                            try:
-                                sector = yf.Ticker(ticker, session=yf_session).info.get('sector', 'Unknown')
+                            try: sector = yf.Ticker(ticker, session=yf_session).info.get('sector', 'Unknown')
                             except: pass
-                            
-                        update_ticker_baseline(ticker, avg_vol, std_dev, sector)
-                        logging.info(f"Updated {ticker} (Massive): Avg Vol {avg_vol:,.0f}, Sector: {sector}")
-                    else:
-                        logging.warning(f"Not enough data for {ticker} (got {len(volumes)} days)")
-                else:
-                    logging.warning(f"Massive.com returned OK but no results for {ticker} (Check if ticker is active)")
-            else:
-                error_msg = data.get('error') or data.get('status') or "Unknown Massive Error"
-                logging.error(f"Massive.com error for {ticker} (Status {response.status_code}): {error_msg}")
-
-            if i < len(tickers_to_sync) - 1:
-                time.sleep(13) 
-
+                        update_ticker_baseline(ticker, avg_vol, std_dev, sector, social_vel)
+                        logging.info(f"Updated {ticker} (Massive) | Social: {social_vel}")
+            if i < len(tickers_to_sync) - 1: time.sleep(13) 
         except Exception as e:
+            # We don't notify on every single ticker fail to avoid spam, but we log it locally
             logging.error(f"Sync failed for {ticker}: {e}")
             time.sleep(5)
 
 if __name__ == "__main__":
-    sync_baselines()
+    try:
+        sync_baselines()
+    except Exception as e:
+        logging.error(f"FATAL: sync_baselines crashed: {e}")
+        notify_error_sync("MASSIVE_SYNC_FATAL", e, "Global crash in baseline synchronization.")

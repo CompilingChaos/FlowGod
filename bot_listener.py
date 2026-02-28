@@ -4,6 +4,7 @@ import logging
 import os
 from datetime import datetime
 from config import TELEGRAM_TOKEN
+from error_reporter import notify_error_sync
 
 TRADES_FILE = "trades_to_verify.csv"
 
@@ -22,7 +23,9 @@ def harvest_saved_trades():
         data = response.json()
 
         if not data.get("ok"):
-            logging.error(f"Telegram Harvest Error: {data.get('description')}")
+            msg = f"Telegram Harvest Error: {data.get('description')}"
+            logging.error(msg)
+            notify_error_sync("BOT_LISTENER_API", Exception("API Error"), msg)
             return
 
         updates = data.get("result", [])
@@ -70,7 +73,13 @@ def harvest_saved_trades():
             logging.info(f"Successfully harvested {new_saves} new trades.")
 
     except Exception as e:
-        logging.error(f"Harvesting failed: {e}")
+        msg = f"Harvesting failed: {e}"
+        logging.error(msg)
+        notify_error_sync("BOT_LISTENER_SYSTEM", e, msg)
 
 if __name__ == "__main__":
-    harvest_saved_trades()
+    try:
+        harvest_saved_trades()
+    except Exception as e:
+        logging.error(f"FATAL: {e}")
+        notify_error_sync("BOT_LISTENER_FATAL", e, "Crash in execution block.")

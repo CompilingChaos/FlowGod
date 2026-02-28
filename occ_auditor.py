@@ -4,6 +4,7 @@ import logging
 import io
 from datetime import datetime, timedelta
 from historical_db import init_db, mark_alert_confirmed, update_trust_score
+from error_reporter import notify_error_sync
 
 # OCC Data Endpoints
 # Volume: https://marketdata.theocc.com/daily-volume-statistics?reportDate=YYYYMMDD&format=csv
@@ -15,7 +16,6 @@ def audit_clearinghouse():
     This provides 100% accurate clearinghouse data.
     """
     # 1. Determine "Yesterday" (The last trading day)
-    # If today is Monday, we check Friday
     today = datetime.now()
     if today.weekday() == 0: # Monday
         yesterday = today - timedelta(days=3)
@@ -33,26 +33,22 @@ def audit_clearinghouse():
     try:
         response = requests.get(vol_url, timeout=30)
         if response.status_code != 200:
-            logging.error(f"OCC Volume Download Failed (Status {response.status_code})")
+            msg = f"OCC Volume Download Failed (Status {response.status_code})"
+            logging.error(msg)
+            notify_error_sync("OCC_AUDITOR_DOWNLOAD", Exception("HTTP Error"), msg)
             return
 
         # Parse CSV (Skip header metadata if present)
-        # Note: OCC files often have a few lines of metadata at the top
         df_vol = pd.read_csv(io.StringIO(response.text), skiprows=5)
         
         # 3. Cross-Reference with our Database
         conn = init_db()
-        # Get all unconfirmed alerts from yesterday
         unconfirmed = conn.execute("SELECT contract, ticker, alert_vol FROM alerts_sent WHERE confirmed = 0").fetchall()
         
         for contract, ticker, alert_vol in unconfirmed:
-            # Match contract in OCC data
-            # OCC uses separate columns for Symbol, Exp, Strike, Type
-            # We'll do a simple ticker-level volume sanity check if strike-matching is too complex for free CSV
             ticker_vol = df_vol[df_vol['Symbol'] == ticker]['Total'].sum()
             
             if ticker_vol > 0:
-                # If total ticker volume is less than what we thought we saw, it was a 'ghost' trade
                 if ticker_vol < alert_vol * 0.8:
                     logging.warning(f"⚠️ OCC DISCREPANCY: {ticker} volume seen was {alert_vol}, but only {ticker_vol} cleared.")
                     update_trust_score(ticker, -0.1)
@@ -60,14 +56,19 @@ def audit_clearinghouse():
                 else:
                     logging.info(f"✅ OCC VERIFIED: {ticker} volume confirmed by Clearinghouse.")
                     update_trust_score(ticker, 0.05)
-                    # We don't mark as 1 yet because we need the OI update tomorrow
         
         conn.close()
         logging.info("OCC Nightly Audit Complete.")
 
     except Exception as e:
-        logging.error(f"OCC Audit System Failure: {e}")
+        msg = f"OCC Audit System Failure: {e}"
+        logging.error(msg)
+        notify_error_sync("OCC_AUDITOR_SYSTEM", e, msg)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    audit_clearinghouse()
+    try:
+        audit_clearinghouse()
+    except Exception as e:
+        logging.error(f"FATAL: {e}")
+        notify_error_sync("OCC_AUDITOR_FATAL", e, "Crash in execution block.")
