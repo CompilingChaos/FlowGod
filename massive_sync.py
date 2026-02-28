@@ -25,6 +25,11 @@ def sync_baselines():
 
     count = 0
     for ticker in watchlist:
+        # Skip non-US tickers (containing dots like .DE, .MI) as Massive Free Tier doesn't support them
+        if "." in ticker:
+            logging.info(f"Skipping non-US ticker {ticker} (Massive Free Tier restriction)")
+            continue
+
         try:
             # Massive.com Aggregates Endpoint
             url = f"https://api.massive.com/v2/aggs/ticker/{ticker}/range/1/day/{start_date}/{end_date}?adjusted=true&sort=desc&limit={BASELINE_DAYS}&apiKey={MASSIVE_API_KEY}"
@@ -32,7 +37,7 @@ def sync_baselines():
             response = requests.get(url)
             data = response.json()
 
-            if data.get('status') == 'OK' and 'results' in data:
+            if response.status_code == 200 and data.get('status') == 'OK' and 'results' in data:
                 volumes = [day['v'] for day in data['results']]
                 if len(volumes) > 5:
                     avg_vol = np.mean(volumes)
@@ -42,7 +47,8 @@ def sync_baselines():
                 else:
                     logging.warning(f"Not enough data for {ticker} (got {len(volumes)} days)")
             else:
-                logging.error(f"Massive.com error for {ticker}: {data.get('error', 'Unknown error')}")
+                error_msg = data.get('error') or data.get('status') or "Unknown API Error"
+                logging.error(f"Massive.com error for {ticker} (Status {response.status_code}): {error_msg}")
 
             count += 1
             # Rate Limit: 5 requests per minute -> 12 seconds per request
