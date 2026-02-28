@@ -7,7 +7,6 @@ import logging
 from data_fetcher import get_options_data
 from scanner import score_unusual
 from alerts import send_alert
-from historical_db import update_historical, is_alert_sent, mark_alert_sent, load_from_csv, save_to_csv
 from historical_db import update_historical, is_alert_sent, mark_alert_sent, load_from_csv, save_to_csv, get_ticker_context
 
 def process_ticker(ticker):

@@ -28,6 +28,7 @@ def load_from_csv():
             conn = init_db()
             if conn:
                 df.to_sql('hist_vol_oi', conn, if_exists='replace', index=False)
+                conn.close()
         except Exception as e:
             logging.error(f"Error loading CSV: {e}")
 
@@ -38,11 +39,11 @@ def save_to_csv():
         cutoff = (datetime.now() - timedelta(days=60)).date().isoformat()
         df = pd.read_sql_query("SELECT * FROM hist_vol_oi WHERE date >= ?", conn, params=(cutoff,))
         df.to_csv(HISTORICAL_CSV, index=False)
+        conn.close()
     except Exception as e:
         logging.error(f"Error saving CSV: {e}")
 
 def get_ticker_context(ticker, days=2):
-    """Summarizes the last X days of activity for a specific ticker."""
     conn = init_db()
     if not conn: return "No historical context available."
     cutoff = (datetime.now() - timedelta(days=days)).date().isoformat()
@@ -55,6 +56,7 @@ def get_ticker_context(ticker, days=2):
     """
     try:
         df = pd.read_sql_query(query, conn, params=(ticker, cutoff))
+        conn.close()
         if df.empty:
             return "First time seeing this ticker in 48 hours."
         
@@ -77,6 +79,7 @@ def update_historical(ticker, chain_df):
         conn.execute("INSERT OR REPLACE INTO hist_vol_oi VALUES (?,?,?,?,?)",
                      (ticker, contract, today, vol, oi))
     conn.commit()
+    conn.close()
 
 def get_stats(ticker, contract, days=30):
     conn = init_db()
@@ -92,6 +95,7 @@ def get_stats(ticker, contract, days=30):
     """
     try:
         df = pd.read_sql_query(query, conn, params=(ticker, contract, cutoff))
+        conn.close()
         if df.empty or df.iloc[0]['avg_vol'] is None:
             return {'avg_vol': 0, 'avg_oi': 0, 'std_dev': 0}
         row = df.iloc[0]
@@ -108,6 +112,7 @@ def is_alert_sent(contract):
     conn.execute("DELETE FROM alerts_sent WHERE timestamp < ?", (cutoff,))
     conn.commit()
     res = conn.execute("SELECT 1 FROM alerts_sent WHERE contract = ?", (contract,)).fetchone()
+    conn.close()
     return res is not None
 
 def mark_alert_sent(contract):
@@ -116,3 +121,4 @@ def mark_alert_sent(contract):
     conn.execute("INSERT OR REPLACE INTO alerts_sent (contract, timestamp) VALUES (?, ?)",
                  (contract, datetime.now().isoformat()))
     conn.commit()
+    conn.close()
