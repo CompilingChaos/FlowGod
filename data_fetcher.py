@@ -8,18 +8,22 @@ import numpy as np
 from datetime import datetime
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 from config import CLOUDFLARE_PROXY_URL
+from error_reporter import notify_error_sync
 
 # --- Cloudflare Bridge Monkey Patch ---
 if CLOUDFLARE_PROXY_URL:
-    original_request = requests.Session.request
-    proxy_url = CLOUDFLARE_PROXY_URL.rstrip('/')
-    def proxied_request(self, method, url, *args, **kwargs):
-        if "finance.yahoo.com" in url:
-            new_url = re.sub(r'https://query\d\.finance\.yahoo\.com', proxy_url, url)
-            return original_request(self, method, new_url, *args, **kwargs)
-        return original_request(self, method, url, *args, **kwargs)
-    requests.Session.request = proxied_request
-    logging.info(f"✅ Cloudflare Bridge Patched: {proxy_url}")
+    try:
+        original_request = requests.Session.request
+        proxy_url = CLOUDFLARE_PROXY_URL.rstrip('/')
+        def proxied_request(self, method, url, *args, **kwargs):
+            if "finance.yahoo.com" in url:
+                new_url = re.sub(r'https://query\d\.finance\.yahoo\.com', proxy_url, url)
+                return original_request(self, method, new_url, *args, **kwargs)
+            return original_request(self, method, url, *args, **kwargs)
+        requests.Session.request = proxied_request
+        logging.info(f"✅ Cloudflare Bridge Patched: {proxy_url}")
+    except Exception as e:
+        notify_error_sync("DATA_FETCHER_PATCH", e, "Failed to apply Cloudflare Bridge monkey patch.")
 
 def get_advanced_macro():
     """Fetches global macro context (SPY, VIX, DXY, TNX, QQQ) for institutional analysis."""
@@ -72,31 +76,12 @@ def get_intraday_aggression(ticker):
         rolling_std = df['vol_density'].rolling(window=30).std()
         df['dark_z'] = (df['vol_density'] - rolling_mean) / rolling_std
         
-        # Return full DF for HVN analysis in scanner.py
-        return df
+        candle = df.iloc[-1].to_dict()
+        candle['vwap'] = df['VWAP'].iloc[-1]
+        candle['dark_z_max'] = df['dark_z'].iloc[-5:].max()
+        candle['prev_close'] = df['Close'].iloc[-2]
+        return candle
     except: return None
-
-def get_social_velocity(ticker):
-    """Calculates StockTwits message velocity (messages per minute)."""
-    try:
-        # StockTwits Unauthenticated API
-        url = f"https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-        
-        response = requests.get(url, headers=headers, timeout=5)
-        data = response.json()
-        messages = data.get('messages', [])
-        
-        if len(messages) < 5: return 0.0
-        
-        # Velocity = Count / TimeDelta
-        t_newest = pd.to_datetime(messages[0]['created_at'])
-        t_oldest = pd.to_datetime(messages[-1]['created_at'])
-        diff_mins = max((t_newest - t_oldest).total_seconds() / 60.0, 1.0)
-        
-        return round(len(messages) / diff_mins, 2)
-    except:
-        return 0.0
 
 def get_stock_info(ticker):
     try:

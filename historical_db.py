@@ -25,27 +25,23 @@ def init_db():
         # Stock Baselines
         conn.execute('''CREATE TABLE IF NOT EXISTS ticker_stats 
                      (ticker TEXT PRIMARY KEY, avg_vol REAL, std_dev REAL, sector TEXT, 
-                      trust_score REAL DEFAULT 1.0, avg_social_vel REAL DEFAULT 0.0,
-                      last_updated TEXT)''')
+                      trust_score REAL DEFAULT 1.0, last_updated TEXT)''')
         conn.commit()
         return conn
     except Exception as e:
         logging.error(f"DB Init Error: {e}")
         return None
 
-def update_ticker_baseline(ticker, avg_vol, std_dev, sector="Unknown", social_vel=0.0):
+def update_ticker_baseline(ticker, avg_vol, std_dev, sector="Unknown"):
     conn = init_db()
     if not conn: return
     try:
-        res = conn.execute("SELECT trust_score, avg_social_vel FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
+        res = conn.execute("SELECT trust_score FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
         current_trust = res[0] if res else 1.0
-        # If social_vel is provided (non-zero), update it. Otherwise keep current.
-        new_social = social_vel if social_vel > 0 else (res[1] if res else 0.0)
-        
         conn.execute("""INSERT OR REPLACE INTO ticker_stats 
-                     (ticker, avg_vol, std_dev, sector, trust_score, avg_social_vel, last_updated) 
-                     VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                     (ticker, avg_vol, std_dev, sector, current_trust, new_social, datetime.now().isoformat()))
+                     (ticker, avg_vol, std_dev, sector, trust_score, last_updated) 
+                     VALUES (?, ?, ?, ?, ?, ?)""",
+                     (ticker, avg_vol, std_dev, sector, current_trust, datetime.now().isoformat()))
         conn.commit()
     finally:
         conn.close()
@@ -54,9 +50,9 @@ def get_ticker_baseline(ticker):
     conn = init_db()
     if not conn: return None
     try:
-        res = conn.execute("SELECT avg_vol, std_dev, sector, trust_score, avg_social_vel FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
+        res = conn.execute("SELECT avg_vol, std_dev, sector, trust_score FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
         if res:
-            return {'avg_vol': res[0], 'std_dev': res[1], 'sector': res[2], 'trust_score': res[3], 'avg_social_vel': res[4]}
+            return {'avg_vol': res[0], 'std_dev': res[1], 'sector': res[2], 'trust_score': res[3]}
         return None
     finally:
         conn.close()

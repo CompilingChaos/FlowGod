@@ -4,7 +4,7 @@ import pandas as pd
 import random
 import logging
 import re
-from data_fetcher import get_stock_info, get_option_chain_data, get_advanced_macro, get_contract_oi, get_sector_etf_performance, get_intraday_aggression, get_social_velocity
+from data_fetcher import get_stock_info, get_option_chain_data, get_advanced_macro, get_contract_oi, get_sector_etf_performance, get_intraday_aggression
 from scanner import score_unusual, get_stock_heat, process_results
 from alerts import send_alert, send_confirmation_alert
 from historical_db import (
@@ -16,12 +16,10 @@ from historical_db import (
 from config import WATCHLIST_FILE, MAX_TICKERS, MIN_STOCK_Z_SCORE
 from massive_sync import sync_baselines
 from bot_listener import harvest_saved_trades
-from occ_auditor import audit_clearinghouse
-from shadow_ingestion import get_shadow_triggers
-from error_reporter import report_critical_error, log_and_report
+from shadow_ingestion import ShadowDeepDive, run_deep_dive_analysis
+from error_reporter import reporter
 
-@log_and_report("Sequential Worker")
-async def process_ticker_sequential(ticker, sector_from_csv, is_shadow=False):
+async def process_ticker_sequential(ticker, sector_from_csv, is_deep_dive=False):
     """Sequential worker function."""
     try:
         logging.info(f"Scanning {ticker} ({sector_from_csv})...")
@@ -33,17 +31,13 @@ async def process_ticker_sequential(ticker, sector_from_csv, is_shadow=False):
         stock_z, sector_from_db = get_stock_heat(ticker, stock_vol)
         sector = sector_from_csv if sector_from_csv != "Unknown" else sector_from_db
         
-        # Shadow Trigger Bypass: Always scan if shadow triggered
-        is_hot = stock_z > 1.0 or is_shadow
-        always_scan = ticker in ['SPY', 'QQQ', 'TSLA', 'NVDA', 'AAPL']
-        
-        if not is_hot and not always_scan: return []
+        # Deep Dive bypasses Z-Score threshold
+        if not (stock_z > 1.0 or is_deep_dive or ticker in ['SPY', 'QQQ', 'TSLA', 'NVDA', 'AAPL']): 
+            return []
 
-        logging.info(f"Ticker {ticker} is HOT (Z: {stock_z:.1f} | Shadow: {is_shadow}). Fetching options...")
+        logging.info(f"Ticker {ticker} is {'SHADOW TRIGGERED' if is_deep_dive else 'HOT'} (Z: {stock_z:.1f}). Fetching options...")
         candle = get_intraday_aggression(ticker)
-        
-        # Pull full chain for shadow or core targets
-        df = get_option_chain_data(ticker, price, stock_vol, full_chain=is_hot)
+        df = get_option_chain_data(ticker, price, stock_vol, full_chain=True)
         if df.empty: return []
 
         update_historical(ticker, df)
@@ -53,9 +47,7 @@ async def process_ticker_sequential(ticker, sector_from_csv, is_shadow=False):
         trades_to_alert = []
         for _, trade in flags.iterrows():
             if not is_alert_sent(trade['contract']):
-                trade_dict = trade.to_dict()
-                if is_shadow: trade_dict['aggression'] = f"🕵️ SHADOW TRIGGER 🕵️ | {trade_dict['aggression']}"
-                trades_to_alert.append({'trade': trade_dict, 'context': context})
+                trades_to_alert.append({'trade': trade.to_dict(), 'context': context})
         return trades_to_alert
     except Exception as e:
         logging.error(f"Error on {ticker}: {e}")
@@ -83,42 +75,40 @@ async def verify_stickiness():
             else: mark_alert_confirmed(contract, 2) 
         except: pass
 
-@log_and_report("Scan Cycle")
 async def scan_cycle():
-    # 1. Institutional Audit
-    audit_clearinghouse()
-
-    # 2. Pre-Scan Prep & Shadowing
+    # 1. Pre-Scan Prep & Harvesting
     sync_baselines()
     load_from_csv()
     harvest_saved_trades()
-    shadow_tickers = get_shadow_triggers()
     
-    # 3. Stickiness Verification
+    # 2. Stickiness Verification
     await verify_stickiness()
     
-    # 4. Market Context
+    # 3. Market Context
     macro = get_advanced_macro()
     sectors = get_sector_etf_performance()
     
+    # 4. Tier-3 Shadow Intelligence Trigger
+    shadow = ShadowDeepDive()
+    trigger_tickers = shadow.get_trigger_tickers()
+    
     watchlist_df = pd.read_csv(WATCHLIST_FILE).head(MAX_TICKERS)
+    scan_list = []
+    for _, row in watchlist_df.iterrows():
+        scan_list.append({'ticker': row['ticker'], 'sector': row['sector'], 'is_deep': False})
     
-    # Re-order watchlist to prioritize Shadow Targets
-    tickers_to_scan = []
-    for t in shadow_tickers:
-        row = watchlist_df[watchlist_df['ticker'] == t]
-        if not row.empty:
-            tickers_to_scan.append((t, row.iloc[0]['sector'], True))
+    # Inject Trigger Tickers at the front
+    for t in trigger_tickers:
+        if t not in [s['ticker'] for s in scan_list]:
+            scan_list.insert(0, {'ticker': t, 'sector': 'Unknown', 'is_deep': True})
+        else:
+            # Upgrade existing ticker to Deep Dive
+            for s in scan_list:
+                if s['ticker'] == t: s['is_deep'] = True
     
-    remaining = watchlist_df[~watchlist_df['ticker'].isin(shadow_tickers)]
-    for _, row in remaining.iterrows():
-        tickers_to_scan.append((row['ticker'], row['sector'], False))
-
-    logging.info(f"Starting prioritized scan for {len(tickers_to_scan)} tickers...")
-
     all_raw_alerts = []
-    for ticker, sector, is_shadow in tickers_to_scan:
-        alerts_data = await process_ticker_sequential(ticker, sector, is_shadow)
+    for item in scan_list:
+        alerts_data = await process_ticker_sequential(item['ticker'], item['sector'], is_deep_dive=item['is_deep'])
         all_raw_alerts.extend(alerts_data)
         time.sleep(random.uniform(3, 5))
 
@@ -127,14 +117,24 @@ async def scan_cycle():
 
     for trade in final_trades:
         context = "No historical context."
+        is_shadow = False
         for a in all_raw_alerts:
             if a['trade']['ticker'] == trade['ticker']:
                 context = a['context']
+                # Check if this ticker was originally deep-dive triggered
+                for item in scan_list:
+                    if item['ticker'] == trade['ticker'] and item['is_deep']:
+                        is_shadow = True
+                        break
                 break
-        sent = await send_alert(trade, context, macro)
+        sent = await send_alert(trade, context, macro, is_shadow=is_shadow)
         mark_alert_sent(trade['contract'], ticker=trade['ticker'], trade_type=trade['type'], vol=trade['volume'], oi=trade['oi'], price=trade['premium'])
         if sent: await asyncio.sleep(1) 
     save_to_csv()
 
 if __name__ == "__main__":
-    asyncio.run(scan_cycle())
+    try:
+        asyncio.run(scan_cycle())
+    except Exception as e:
+        logging.error(f"FATAL: Scan cycle collapsed: {e}")
+        asyncio.run(reporter.report_critical_error("MAIN_CYCLE", e, "Global crash in scan_cycle entry point."))

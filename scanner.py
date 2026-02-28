@@ -13,30 +13,18 @@ def get_stock_heat(ticker, live_vol):
         return z_score, baseline.get('sector', 'Unknown')
     return 0, "Unknown"
 
-def calculate_color(S, K, T, r, sigma, option_type='calls'):
-    """Third-order Greek: Derivative of Gamma wrt Time. Measures decay velocity."""
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0.0
-    try:
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-        nd1 = norm.pdf(d1)
-        term1 = -nd1 / (2 * S * T * sigma * math.sqrt(T))
-        term2 = 1 + (2 * r * T * d1 - d2 * sigma * math.sqrt(T)) / (sigma * math.sqrt(T))
-        return round(term1 * term2, 6)
-    except: return 0.0
-
 def calculate_greeks(S, K, T, r, sigma, option_type='calls'):
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0, 0, 0, 0, 0
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0, 0, 0, 0
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
         d2 = d1 - sigma * math.sqrt(T)
-        delta = norm.cdf(d1) if option_type == 'calls' else norm.cdf(d1) - 1
+        if option_type == 'calls': delta = norm.cdf(d1)
+        else: delta = norm.cdf(d1) - 1
         gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
         vanna = (norm.pdf(d1) * d2) / sigma
         charm = -norm.pdf(d1) * (r / (sigma * math.sqrt(T)) - d2 / (2 * T))
-        color = calculate_color(S, K, T, r, sigma, option_type)
-        return round(delta, 3), round(gamma, 4), round(vanna, 4), round(charm, 4), color
-    except: return 0, 0, 0, 0, 0
+        return round(delta, 3), round(gamma, 4), round(vanna, 4), round(charm, 4)
+    except: return 0, 0, 0, 0
 
 def calculate_volatility_surface(df):
     if df.empty: return 0, 0, "NEUTRAL"
@@ -57,8 +45,10 @@ def map_gex_walls(df):
                                  df['gamma'] * df['openInterest'] * 100 * df['underlying_price'],
                                  -df['gamma'] * df['openInterest'] * 100 * df['underlying_price'])
         strike_gex = df.groupby('strike')['net_gex'].sum()
-        call_wall, put_wall = strike_gex.idxmax(), strike_gex.idxmin()
-        flip, strike_gex_sorted = 0, strike_gex.sort_index()
+        call_wall = strike_gex.idxmax()
+        put_wall = strike_gex.idxmin()
+        strike_gex_sorted = strike_gex.sort_index()
+        flip = 0
         for i in range(len(strike_gex_sorted)-1):
             if np.sign(strike_gex_sorted.iloc[i]) != np.sign(strike_gex_sorted.iloc[i+1]):
                 flip = strike_gex_sorted.index[i]
@@ -66,105 +56,92 @@ def map_gex_walls(df):
         return call_wall, put_wall, flip
     except: return 0, 0, 0
 
-def calculate_hvn_conviction(df_1m, t_type, spot):
-    if df_1m is None or len(df_1m) < 20: return 1.0, "N/A"
+def calculate_trv_aggression(candle, ticker):
+    if not candle: return "Unknown", 0
     try:
-        price_bins = np.round(df_1m['Close'] * 10) / 10
-        hvn_price = df_1m.groupby(price_bins)['Volume'].sum().idxmax()
-        conviction, label = 1.0, "POC Cleansed"
-        if "CALL" in t_type:
-            if spot < hvn_price: conviction, label = 0.3, f"Trap: Below HVN (${hvn_price})"
-        else:
-            if spot > hvn_price: conviction, label = 0.3, f"Trap: Above HVN (${hvn_price})"
-        return conviction, label
-    except: return 1.0, "N/A"
-
-def detect_icebergs(df_1m):
-    if df_1m is None or len(df_1m) < 30: return False
-    try:
-        tr = (df_1m['High'] - df_1m['Low']).replace(0, 0.01)
-        df_1m['vol_density'] = df_1m['Volume'] / tr
-        roll_mean = df_1m['vol_density'].rolling(window=30).mean()
-        roll_std = df_1m['vol_density'].rolling(window=30).std()
-        df_1m['iceberg_z'] = (df_1m['vol_density'] - roll_mean) / (roll_std + 0.1)
-        vol_90 = df_1m['Volume'].quantile(0.90)
-        latest = df_1m.iloc[-5:] 
-        return ((latest['iceberg_z'] > 3.0) & (latest['Volume'] > vol_90)).any()
-    except: return False
+        range_total = candle['High'] - candle['Low']
+        if range_total == 0: return "Neutral", 5
+        buyer_agg = (candle['Close'] - candle['Low']) / range_total
+        if buyer_agg > 0.8 and candle['Close'] > candle['vwap']:
+            return "Institutional Sweep (TRV Max)", 50
+        if candle.get('dark_z_max', 0) > 4.0:
+            return "Dark Pool Absorption", 60
+        return "Standard Flow", 10
+    except: return "Unknown", 0
 
 def classify_aggression(last_price, bid, ask):
     if last_price >= ask and ask > 0: return "Aggressive (Ask)", 50
     if last_price <= bid and bid > 0: return "Passive (Bid)", 0
     return "Neutral (Mid)", 10
 
-def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_vel=0.0):
+def score_unusual(df, ticker, stock_z, sector="Unknown", candle=None):
     if df.empty: return pd.DataFrame()
     skew, contango, vol_bias = calculate_volatility_surface(df)
-    baseline = get_ticker_baseline(ticker)
-    trust_mult = baseline.get('trust_score', 1.0) if baseline else 1.0
-    avg_social = baseline.get('avg_social_vel', 0.0) if baseline else 0.0
-    hype_z = (social_vel / (avg_social + 0.1)) if avg_social > 0 else 0.0
-
     for idx, row in df.iterrows():
         T = max(0.001, row['dte']) / 365.0
-        d, g, v, c, color = calculate_greeks(row['underlying_price'], row['strike'], T, 0.045, row['impliedVolatility'], row['side'])
-        df.at[idx, 'delta'], df.at[idx, 'gamma'], df.at[idx, 'vanna'], df.at[idx, 'charm'], df.at[idx, 'color'] = d, g, v, c, color
+        d, g, v, c = calculate_greeks(row['underlying_price'], row['strike'], T, 0.045, row['impliedVolatility'], row['side'])
+        df.at[idx, 'delta'], df.at[idx, 'gamma'], df.at[idx, 'vanna'], df.at[idx, 'charm'] = d, g, v, c
         df.at[idx, 'gex'] = g * row['openInterest'] * 100 * row['underlying_price']
-        df.at[idx, 'decay_vel'] = color * row['openInterest'] * 100
-
     call_wall, put_wall, flip = map_gex_walls(df)
-    total_decay_vel = int(df['decay_vel'].sum())
     spot = df.iloc[0]['underlying_price']
-    
-    trv_label, trv_bonus = "Standard Flow", 10
-    if candle_df is not None:
-        if detect_icebergs(candle_df): trv_label, trv_bonus = "Institutional ICEBERG", 65
-        else:
-            last_c = candle_df.iloc[-1]
-            buyer_agg = (last_c['Close'] - last_c['Low']) / (last_c['High'] - last_c['Low'] + 0.01)
-            vwap = candle_df['VWAP'].iloc[-1] if 'VWAP' in candle_df.columns else last_c['Close']
-            if buyer_agg > 0.8 and last_c['Close'] > vwap: trv_label, trv_bonus = "Sweep (TRV Max)", 50
-
+    trv_label, trv_bonus = calculate_trv_aggression(candle, ticker)
+    baseline = get_ticker_baseline(ticker)
+    trust_mult = baseline.get('trust_score', 1.0) if baseline else 1.0
     results = []
     for _, row in df.iterrows():
-        agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
-        hvn_conv, hvn_label = calculate_hvn_conviction(candle_df, row['side'].upper(), spot)
+        agg_label, agg_bonus = classify_aggression(row.get('lastPrice', 0), row.get('bid', 0), row.get('ask', 0))
         score = 0
-        if row['volume'] > 1000: score += 20
-        if row['notional'] > 500000: score += 40
+        vol = row.get('volume', 0)
+        notional = row.get('notional', 0)
+        if pd.isna(vol): vol = 0
+        if pd.isna(notional): notional = 0
+        
+        if vol > 1000: score += 20
+        if notional > 500000: score += 40
         score += agg_bonus + trv_bonus
         if abs(spot - call_wall) / spot < 0.01: score -= 30
         if (vol_bias == "BULLISH" and row['side'] == 'calls') or (vol_bias == "BEARISH" and row['side'] == 'puts'): score += 40
+        score = int(score * trust_mult)
         
-        score = int(score * trust_mult * hvn_conv)
-        if (row['volume'] > row['openInterest'] and row['volume'] > 500) or score >= 85:
+        oi = row.get('openInterest', 0)
+        if pd.isna(oi): oi = 0
+        
+        if (vol > oi and vol > 500) or score >= 85:
             results.append({
                 'ticker': ticker, 'contract': row['contractSymbol'], 'type': row['side'].upper(),
-                'strike': row['strike'], 'exp': row['exp'], 'volume': int(row['volume']),
-                'oi': int(row['openInterest']), 'premium': round(row['lastPrice'], 2),
-                'notional': int(row['notional']), 'rel_vol': round(row['volume']/(get_stats(ticker, row['contractSymbol'])['avg_vol']+1), 1),
+                'strike': row['strike'], 'exp': row['exp'], 'volume': int(vol),
+                'oi': int(oi), 'premium': round(row.get('lastPrice', 0), 2),
+                'notional': int(notional), 'rel_vol': round(vol/(get_stats(ticker, row['contractSymbol'])['avg_vol']+1), 1),
                 'delta': row['delta'], 'gamma': row['gamma'], 'vanna': row['vanna'], 'charm': row['charm'],
-                'gex': int(row['gex']), 'decay_vel': total_decay_vel, 'call_wall': call_wall, 'put_wall': put_wall, 'flip': flip,
-                'skew': skew, 'bias': vol_bias, 'score': score, 'aggression': f"{agg_label} | {trv_label} | {hvn_label}",
+                'gex': int(row['gex']), 'call_wall': call_wall, 'put_wall': put_wall, 'flip': flip,
+                'skew': skew, 'bias': vol_bias, 'score': score, 'aggression': f"{agg_label} | {trv_label}",
                 'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
-                'hype_z': round(hype_z, 1), 'detection_reason': f"Score {score} | {hvn_label} | {vol_bias}"
+                'detection_reason': f"Score {score} | {vol_bias} Skew"
             })
     return pd.DataFrame(results)
 
 def generate_system_verdict(trade):
-    t_type, spot = trade['type'], trade.get('underlying_price', 0)
-    call_wall, put_wall = trade.get('call_wall', 0), trade.get('put_wall', 0)
-    skew, agg = trade.get('skew', 0), trade.get('aggression', "")
-    verdict, logic = "NEUTRAL", "Low conviction."
+    """Generates a math-driven trade recommendation for Trade Republic."""
+    t_type = trade['type']
+    spot = trade.get('underlying_price', 0)
+    call_wall = trade.get('call_wall', 0)
+    put_wall = trade.get('put_wall', 0)
+    skew = trade.get('skew', 0)
+    agg = trade.get('aggression', "")
+    
+    verdict, logic = "NEUTRAL", "Insufficient data for conviction."
+    
     if "CALL" in t_type and "Aggressive" in agg:
-        if skew < 0: verdict, logic = "CALL (Long)", "Aggressive sweep + Bullish Skew."
-        elif spot > 0 and put_wall > 0 and (spot - put_wall) / spot < 0.02: verdict, logic = "CALL (Long)", "Support bounce at Put Wall."
-        else: verdict, logic = "BUY (Stock)", "Bullish flow, conservative tech."
+        if skew < 0: verdict, logic = "CALL (Long)", "Aggressive Call sweep with Bullish Skew."
+        elif spot > 0 and put_wall > 0 and (spot - put_wall) / spot < 0.02: verdict, logic = "CALL (Long)", "Whale entry at Put Wall support."
+        else: verdict, logic = "BUY (Stock)", "Bullish flow but Skew/Walls suggest conservative entry."
     elif "PUT" in t_type and "Aggressive" in agg:
-        if skew > 0.05: verdict, logic = "PUT (Short)", "Aggressive sweep + Bearish Skew."
-        elif spot > 0 and call_wall > 0 and (call_wall - spot) / spot < 0.02: verdict, logic = "PUT (Short)", "Resistance rejection at Call Wall."
-        else: verdict, logic = "PUT (Short)", "Bearish flow detected."
-    elif "Dark Pool" in agg or "ICEBERG" in agg: verdict, logic = "BUY (Stock)", "Institutional absorption."
+        if skew > 0.05: verdict, logic = "PUT (Short)", "Aggressive Put sweep with Bearish Skew."
+        elif spot > 0 and call_wall > 0 and (call_wall - spot) / spot < 0.02: verdict, logic = "PUT (Short)", "Whale entry at Call Wall resistance."
+        else: verdict, logic = "PUT (Short)", "Bearish flow detected with moderate conviction."
+    elif "Dark Pool" in agg or "Absorption" in agg:
+        verdict, logic = "BUY (Stock)", "Institutional absorption detected. Long-term accumulation."
+
     return verdict, logic
 
 def process_results(all_results, macro_context, sector_performance):
@@ -178,8 +155,9 @@ def process_results(all_results, macro_context, sector_performance):
                 if len(legs) >= 2:
                     leg1, leg2 = legs.iloc[0], legs.iloc[1]
                     if abs(leg1['volume'] - leg2['volume']) / max(leg1['volume'], 1) < 0.2:
+                        strategy = "Bull Call Spread" if side == 'CALLS' else "Bear Put Spread"
                         best_leg = legs.loc[legs['score'].idxmax()].to_dict()
-                        best_leg['type'] = f"🔗 {side[:-1]} SPREAD"
+                        best_leg['type'] = f"🔗 {strategy.upper()}"
                         best_leg['strike'] = f"{leg1['strike']} / {leg2['strike']}"
                         best_leg['notional'] = legs['notional'].sum()
                         best_leg['score'] += 40
@@ -189,7 +167,7 @@ def process_results(all_results, macro_context, sector_performance):
     for ticker, t_group in df.groupby('ticker'):
         if len(t_group) >= 3:
             best = t_group.loc[t_group['score'].idxmax()].to_dict()
-            best['type'] = "📦 CLUSTER 📦"
+            best['type'] = "📦 TICKER CLUSTER 📦"
             best['notional'], best['volume'] = t_group['notional'].sum(), t_group['volume'].sum()
             best['score'] += 50
             final_alerts.append(best)
