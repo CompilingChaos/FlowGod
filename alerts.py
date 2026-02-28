@@ -14,47 +14,33 @@ def get_ai_summary(trade, ticker_context="", macro_context=None):
     try:
         client = genai.Client(api_key=gemini_key)
         m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Neutral"}
-        macro_str = f"Market: {m['sentiment']} (SPY: {m['spy']}%, DXY: {m['dxy']}%, TNX: {m['tnx']}%)"
-        rag_context = get_rag_context(trade['ticker'], trade['type'])
         sys_verdict, sys_logic = generate_system_verdict(trade)
 
-        prompt = f"""As an institutional flow expert, evaluate this trade and the imminence of a trend.
+        prompt = f"""You are a Professional Trading Mentor. Explain this institutional flow in SIMPLE, PLAIN LANGUAGE.
 
-TICKER: {trade['ticker']} {trade['type']} {trade['strike']} | Exp: {trade['exp']}
-{macro_str}
-{rag_context}
-
-CAMPAIGN CONTEXT:
-Weekly Alerts for this Side: {trade.get('weekly_count', 0)} (3+ indicates aggressive scaling)
-
-TREND & PROBABILITY:
-Trend Probability: {trade.get('trend_prob', 0)*100:.0f}%
-Hype Z-Score: {trade.get('hype_z', 0)} (High = Retail FOMO, Low = Institutional Alpha)
-
-GREEKS & DECAY:
-Delta: {trade['delta']} | Gamma: {trade['gamma']} | Vanna: {trade['vanna']} | Charm: {trade['charm']}
-Hedge Decay (Color): {trade.get('decay_vel', 0)}
-GEX Pressure: ${trade['gex']:,} | Gamma Flip Level: ${trade['flip']}
-
-TECHNICALS:
-Skew: {trade['skew']} ({trade['bias']} bias)
-Walls: Call Wall: ${trade['call_wall']} | Put Wall: ${trade['put_wall']}
-Upcoming Earnings: {trade.get('earnings_date', 'N/A')} ({trade.get('earnings_dte', -1)} days away)
+DATA:
+- TICKER: {trade['ticker']} | Current Price: ${trade['underlying_price']}
+- TRADE: {trade['type']} {trade['strike']} | Exp: {trade['exp']}
+- CAMPAIGN: {trade.get('weekly_count', 0)} alerts this week.
+- TREND PROBABILITY: {trade.get('trend_prob', 0)*100:.0f}%
+- LEVELS: Ceiling ${trade['call_wall']} | Floor ${trade['put_wall']}
+- EARNINGS: {trade.get('earnings_date', 'N/A')} ({trade.get('earnings_dte', -1)} days away)
 
 AI INSTRUCTIONS:
-1. Validate SYSTEM VERDICT: {sys_verdict} ({sys_logic}).
-2. Factor in Weekly Campaign: Is this institutional scaling?
-3. Respond ONLY with JSON.
+1. Explain the situation like I am a student. Avoid complex jargon like 'GEX' or 'Vanna'.
+2. Explain WHY this is happening (e.g., "Whales are betting on a big move before earnings").
+3. Explain the TARGET: Where should I look to take profit based on the Ceiling/Floor?
+4. Validate SYSTEM VERDICT: {sys_verdict}. Suggest BUY, CALL, PUT, or NEUTRAL.
 
-RESPONSE SCHEMA:
+RESPONSE SCHEMA (JSON ONLY):
 {{
   "is_unusual": boolean,
   "confidence_score": integer,
   "final_verdict": "BUY" | "CALL" | "PUT" | "NEUTRAL",
   "estimated_duration": "string",
-  "verdict_reasoning": "...",
-  "category": "...",
-  "analysis": "..."
+  "verdict_reasoning": "Simple explanation of the verdict",
+  "category": "e.g. Earnings Bet",
+  "analysis": "Simple overview of the whale activity"
 }}"""
 
         response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt)

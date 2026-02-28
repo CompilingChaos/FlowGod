@@ -33,9 +33,9 @@ async def run_validation_suite():
     # Low IV + Inverted Skew scenario
     mock_put_df = pd.DataFrame([{
         'ticker': 'TEST', 'contractSymbol': 'TEST_PUT', 'side': 'puts', 'strike': 140.0,
-        'dte': 14, 'volume': 5000, 'openInterest': 100, 'impliedVolatility': 0.35, # Cheap IV
-        'lastPrice': 2.50, 'bid': 2.45, 'ask': 2.50, 'underlying_price': 150.0,
-        'notional': 1250000, 'vol_oi_ratio': 50.0 # Added missing columns
+        'exp': '2026-03-15', 'dte': 14, 'volume': 5000, 'openInterest': 100, 
+        'impliedVolatility': 0.35, 'lastPrice': 2.50, 'bid': 2.45, 'ask': 2.50, 
+        'underlying_price': 150.0, 'notional': 1250000, 'vol_oi_ratio': 50.0 
     }])
     # We provide a mock DF with bearish surface
     results = score_unusual(mock_put_df, 'TEST', 1.0, 'Technology')
