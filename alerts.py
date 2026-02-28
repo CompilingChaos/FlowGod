@@ -51,7 +51,7 @@ RESPONSE SCHEMA:
 }}"""
 
         response = client.models.generate_content(
-            model="gemini-2.0-flash", # Using the stable 2.0 Flash or better
+            model="gemini-3-flash", 
             contents=prompt
         )
         
