@@ -5,11 +5,13 @@ FlowGod is a sophisticated options flow scanner and whale tracking tool, inspire
 ## Project Overview
 
 - **Unusual Activity Detection**: Scans for trades where Volume exceeds Open Interest by significant margins or where notional values indicate "whale" activity.
+- **Institutional Sweep Detection**: Analyzes execution price relative to the Bid/Ask spread to identify aggressive "Ask-hitting" sweeps (high conviction) vs. passive fills.
 - **Stealth Scanning Engine**: Uses a sequential, "Stock-First" approach to bypass Yahoo Finance rate limits. It performs a light check on stock volume before committing to heavy option chain fetches.
 - **Cloudflare Worker Bridge**: All Yahoo Finance requests are proxied through a custom Cloudflare Worker to bypass GitHub Actions IP blocks and ensure 100% uptime.
 - **Institutional Ticker Heat**: Integrates Massive.com (US) and Alpha Vantage (International) to calculate official 30-day stock volume baselines.
 - **Global Macro Awareness**: Fetches real-time SPY and VIX performance to contextualize whale trades within the broader market sentiment (Risk-On vs. Risk-Off).
 - **Hybrid Scoring System**: Uses a point-based scoring mechanism (0-200+) based on:
+    - **Institutional Aggression**: Heavy weight (+50 pts) for trades that cross the spread and hit the Ask (True Sweeps).
     - **Ticker Heat**: High Stock Volume Z-Score (>2.0) adds significant weight.
     - **Macro Divergence**: Extra weight if a whale bets against prevailing market fear (e.g., buying calls while VIX is spiking).
     - **Volume & Notional**: High-value trades (>$500k) and high volume (>1000 contracts).

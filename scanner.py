@@ -10,6 +10,18 @@ def get_stock_heat(ticker, live_vol):
         return z_score
     return 0
 
+def classify_aggression(last_price, bid, ask):
+    """Determines if the trade hit the bid, ask, or mid-point."""
+    if last_price >= ask and ask > 0:
+        return "Aggressive (Sweep/Ask)", 50
+    if last_price <= bid and bid > 0:
+        return "Passive (Sell/Bid)", 0
+    if bid > 0 and ask > 0:
+        mid = (bid + ask) / 2
+        if last_price > mid:
+            return "Leaning Bullish (Above Mid)", 25
+    return "Neutral (Mid-Point)", 10
+
 def score_unusual(df, ticker, stock_z):
     results = []
     if df.empty: return pd.DataFrame()
@@ -28,6 +40,9 @@ def score_unusual(df, ticker, stock_z):
         # 2. Implied Volatility (IV) Analysis
         iv = row.get('impliedVolatility', 0)
         
+        # 3. Spread Aggression Analysis
+        agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
+        
         score = 0
         if row['volume'] > 1000: score += 20
         if row['notional'] > 100000: score += 30
@@ -40,11 +55,14 @@ def score_unusual(df, ticker, stock_z):
         if row['dte'] < 45 and row['moneyness'] < 12: score += 20
         if iv > 0.8: score += 20 
         
+        # AGGRESSION BONUS
+        score += agg_bonus
+        
         # STOCK HEAT MULTIPLIER
         if stock_z > MIN_STOCK_Z_SCORE: score += 40
         if stock_z > 5: score += 60
 
-        # 3. Hybrid Filtering Logic
+        # 4. Hybrid Filtering Logic
         meets_mins = (
             row['volume'] >= MIN_VOLUME and 
             row['notional'] >= MIN_NOTIONAL and 
@@ -55,7 +73,7 @@ def score_unusual(df, ticker, stock_z):
         # Opening Position Bypass: Vol > OI
         is_opening = row['volume'] > row['openInterest'] and row['volume'] > 500
 
-        # 4. Final Flagging
+        # 5. Final Flagging
         is_whale = meets_mins or score >= 85 or is_opening
 
         if is_whale:
@@ -75,6 +93,9 @@ def score_unusual(df, ticker, stock_z):
                 'stock_z': round(stock_z, 1),
                 'iv': round(iv, 2),
                 'score': int(score),
+                'aggression': agg_label,
+                'bid': row['bid'],
+                'ask': row['ask'],
                 'bullish': row['side'] == 'calls'
             })
             

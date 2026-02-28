@@ -95,6 +95,9 @@ def get_option_chain_data(ticker, price, stock_vol):
                 side['underlying_price'] = price
                 side['underlying_vol'] = stock_vol
                 side['moneyness'] = abs(side['strike'] - price) / price * 100 if price > 0 else 0
+                # Preserve bid/ask for sweep detection
+                side['bid'] = side['bid']
+                side['ask'] = side['ask']
                 all_data.append(side)
             
             # Small delay between expirations to avoid burst blocking

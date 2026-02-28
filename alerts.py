@@ -25,6 +25,7 @@ TICKER DATA:
 {trade['ticker']} {trade['type']} {trade['strike']} exp {trade['exp']} 
 Volume: {trade['volume']} (vs normal {trade['rel_vol']}x)
 Stock Heat (Z-Score): {trade['stock_z']}
+Aggression: {trade['aggression']} (Price: ${trade['premium']} vs Bid: ${trade['bid']} / Ask: ${trade['ask']})
 Notional Value: ${trade['notional']:,}
 Option Z-Score: {trade['z_score']}
 IV: {trade['iv']*100:.1f}%
@@ -36,11 +37,12 @@ HISTORICAL TICKER CONTEXT (Last 2 Days):
 {ticker_context}
 
 ANALYST INSTRUCTIONS:
-1. Determine if this is 'Aggressive Accumulation', a 'Strategic Hedge', or a 'Speculative Lottery'.
-2. Look for Bullish/Bearish Divergence: Is the whale betting AGAINST the macro sentiment? (High conviction).
-3. If this is routine noise or small relative to the ticker's history, reply ONLY with "NOT_UNUSUAL".
-4. If it is significant, provide a ONE SHORT sentence analysis that sounds professional and definitive.
-Example: 'Massive bullish divergence; whale betting on recovery despite macro fear.'"""
+1. Identify if this is a 'True Sweep' (Aggressive hitting of the Ask) or a passive fill.
+2. Determine if this is 'Aggressive Accumulation', a 'Strategic Hedge', or a 'Speculative Lottery'.
+3. Look for Bullish/Bearish Divergence: Is the whale betting AGAINST the macro sentiment? (High conviction).
+4. If this is routine noise or small relative to the ticker's history, reply ONLY with "NOT_UNUSUAL".
+5. If it is significant, provide a ONE SHORT sentence analysis that sounds professional and definitive.
+Example: 'True institutional sweep; massive bullish divergence betting on recovery despite macro fear.'"""
 
         response = model.generate_content(prompt)
         text = response.text.strip()
@@ -69,6 +71,7 @@ async def send_alert(trade, ticker_context="", macro_context=None):
 Vol: {trade['volume']} • Notional: ${trade['notional']:,}
 Score: {trade['score']} • RelVol: {trade['rel_vol']}x • Z: {trade['z_score']}
 Stock Heat Z: {trade['stock_z']}
+Aggression: {trade['aggression']}
 IV: {trade['iv']*100:.1f}% • Premium: ${trade['premium']}
 
 🌍 MACRO: {m['sentiment']} (SPY {m['spy_pc']}%)
