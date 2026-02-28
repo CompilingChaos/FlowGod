@@ -20,24 +20,27 @@ def score_unusual(df, ticker):
         
         score = 0
         if row['volume'] > 1000: score += 20
-        if row['notional'] > 250000: score += 50
-        if row['vol_oi_ratio'] > 15: score += 30
-        if rel_vol > 10: score += 40
-        if z_score > 3: score += 60  # High Statistical Anomaly
-        if row['dte'] < 30 and row['moneyness'] < 10: score += 20 # Near-term ATM conviction
-        
-        # Unusual IV Spike (if IV is significantly above typical levels, e.g., > 1.0/100%)
+        if row['notional'] > 100000: score += 30
+        if row['notional'] > 500000: score += 40
+        if row['vol_oi_ratio'] > 10: score += 20
+        if row['vol_oi_ratio'] > 20: score += 30
+        if rel_vol > 8: score += 30
+        if z_score > 3: score += 50
+        if z_score > 5: score += 30
+        if row['dte'] < 45 and row['moneyness'] < 12: score += 20
         if iv > 0.8: score += 20 
 
-        # 3. Filtering Logic (Anomaly Detection)
-        # We trigger if it meets hard thresholds OR it's a massive statistical outlier (z > 3.5)
-        is_whale = (
-            (row['volume'] >= MIN_VOLUME and 
-             row['notional'] >= MIN_NOTIONAL and 
-             row['vol_oi_ratio'] >= MIN_VOL_OI_RATIO and 
-             rel_vol >= MIN_RELATIVE_VOL) or
-            (z_score > 3.5 and row['notional'] > 50000)
+        # 3. Hybrid Filtering Logic
+        meets_mins = (
+            row['volume'] >= MIN_VOLUME and 
+            row['notional'] >= MIN_NOTIONAL and 
+            row['vol_oi_ratio'] >= MIN_VOL_OI_RATIO and 
+            rel_vol >= MIN_RELATIVE_VOL
         )
+        
+        # HIGH-SCORE BYPASS: Even if it misses one min threshold, 
+        # if the score is very high (>= 85), we still flag it for AI review.
+        is_whale = meets_mins or score >= 85
 
         if is_whale:
             results.append({

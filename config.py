@@ -15,11 +15,11 @@ ERROR_LOG = "errors.log"
 
 # Configure Logging: Only ERROR and above goes to the file.
 logging.basicConfig(
-    level=logging.INFO, # Global level
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(ERROR_LOG),
-        logging.StreamHandler() # Still print to console for GitHub Action logs
+        logging.StreamHandler()
     ]
 )
 
@@ -27,15 +27,15 @@ logging.basicConfig(
 logging.getLogger("yfinance").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.ERROR)
 
-# To fulfill the "silent if all goes well" requirement, we'll set the 
-# FileHandler to ONLY record Errors.
+# To fulfill the "silent if all goes well" requirement
 file_logger = logging.FileHandler(ERROR_LOG)
 file_logger.setLevel(logging.ERROR)
 logging.getLogger().addHandler(file_logger)
 
-# Constants
-MIN_VOLUME = 500
-MIN_NOTIONAL = 25000
-MIN_VOL_OI_RATIO = 8.0
-MIN_RELATIVE_VOL = 5.0
+# --- Relaxed & Hybrid Thresholds ---
+MIN_VOLUME = 300
+MIN_NOTIONAL = 15000
+MIN_VOL_OI_RATIO = 6.0
+MIN_RELATIVE_VOL = 4.0
 MAX_TICKERS = 50 
+# ------------------------------------
