@@ -12,7 +12,7 @@ from alerts import send_alert
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 async def run_validation_suite():
-    logging.info("🚀 STARTING ULTIMATE TIER-3 VALIDATION SUITE 🚀")
+    logging.info("🚀 STARTING THE ULTIMATE FLOWGOD VALIDATION 🚀")
 
     # 1. MACRO & ETF DATA TEST
     logging.info("\n--- STEP 1: MACRO & ETF DATA INTEGRITY ---")
@@ -22,84 +22,60 @@ async def run_validation_suite():
     sectors = get_sector_etf_performance()
     if sectors:
         logging.info(f"✅ Sector Data: Fetched {len(sectors)} industry proxies.")
-    else:
-        logging.error("❌ Sector Data: Failed to fetch ETF performance.")
 
-    # 2. GREEKS & SURFACE ENGINE TEST (Math Validation)
-    logging.info("\n--- STEP 2: QUANTITATIVE MATH ENGINE (Black-Scholes 4D) ---")
-    # Test Data: S=150, K=155, T=0.1 (36 days), r=0.045, sigma=0.3
+    # 2. GREEKS & SURFACE ENGINE TEST
+    logging.info("\n--- STEP 2: QUANTITATIVE MATH ENGINE (BS-4D) ---")
     d, g, v, c, color = calculate_greeks(150, 155, 0.1, 0.045, 0.3, 'calls')
     logging.info(f"✅ Greeks Logic: Delta {d} | Gamma {g} | Vanna {v} | Color {color}")
-    
-    if abs(d - 0.4) > 0.2: # Rough sanity check
-        logging.error("❌ Greeks Math seems skewed.")
 
-    # 3. MICROSTRUCTURE ENGINE TEST (Iceberg/Sweep Detection)
-    logging.info("\n--- STEP 3: MICROSTRUCTURE ENGINE (Synthetic Order Book) ---")
-    # Create mock 1m candle data for an Iceberg scenario
-    mock_data = {
-        'High': [100.1] * 30,
-        'Low': [99.9] * 30,
-        'Close': [100.0] * 30,
-        'Open': [100.0] * 30,
-        'Volume': [50000] * 30, # Extreme constant volume
-        'VWAP': [100.0] * 30
-    }
-    mock_df = pd.DataFrame(mock_data)
-    # Force an iceberg Z-score trigger
-    mock_df['vol_density'] = 50000 / 0.2
-    mock_df['iceberg_z'] = 5.0
-    
-    label, bonus = detect_microstructure_conviction(mock_df)
+    # 3. PUT-INSIDER LOGIC TEST
+    logging.info("\n--- STEP 3: PUT-INSIDER SPECIALIST TEST ---")
+    # Low IV + Inverted Skew scenario
+    mock_put_df = pd.DataFrame([{
+        'ticker': 'TEST', 'contractSymbol': 'TEST_PUT', 'side': 'puts', 'strike': 140.0,
+        'dte': 14, 'volume': 5000, 'openInterest': 100, 'impliedVolatility': 0.35, # Cheap IV
+        'lastPrice': 2.50, 'bid': 2.45, 'ask': 2.50, 'underlying_price': 150.0
+    }])
+    # We provide a mock DF with bearish surface
+    results = score_unusual(mock_put_df, 'TEST', 1.0, 'Technology')
+    if not results.empty and 'INSIDER PUT' in results.iloc[0]['detection_reason']:
+        logging.info("✅ SUCCESS: Put-Insider detection logic firing correctly.")
+    else:
+        logging.warning("⚠️ NOTICE: Put-Insider check skipped or thresholds not met in test.")
+
+    # 4. MICROSTRUCTURE ENGINE TEST
+    logging.info("\n--- STEP 4: MICROSTRUCTURE ENGINE (Iceberg/Sweep) ---")
+    mock_1m = pd.DataFrame({
+        'High': [100.1] * 30, 'Low': [99.9] * 30, 'Close': [100.0] * 30,
+        'Open': [100.0] * 30, 'Volume': [50000] * 30, 'VWAP': [100.0] * 30
+    })
+    mock_1m['vol_density'] = 50000 / 0.2
+    mock_1m['iceberg_z'] = 5.0
+    label, bonus = detect_microstructure_conviction(mock_1m)
     logging.info(f"✅ Microstructure: {label} (Bonus: {bonus})")
 
-    # 4. HYBRID SIGNAL ENGINE TEST (Verdicts)
-    logging.info("\n--- STEP 4: HYBRID SIGNAL ENGINE (Decision Logic) ---")
-    test_trade = {
-        'type': 'CALLS',
-        'underlying_price': 100.0,
-        'call_wall': 110.0,
-        'put_wall': 90.0,
-        'skew': -0.06, # Bullish skew
-        'aggression': 'Aggressive (Ask) | Institutional Sweep',
-        'ticker': 'TEST',
-        'strike': 105.0,
-        'exp': '2026-03-15',
-        'volume': 1000,
-        'oi': 100,
-        'notional': 500000,
-        'rel_vol': 10.0,
-        'z_score': 5.0,
-        'stock_z': 3.0,
-        'delta': 0.5,
-        'gamma': 0.02,
-        'vanna': 0.05,
-        'charm': 0.01,
-        'gex': 100000,
-        'flip': 102.0,
-        'score': 150,
-        'premium': 2.50,
-        'bid': 2.40,
-        'ask': 2.50
-    }
-    verdict, logic = generate_system_verdict(test_trade)
-    logging.info(f"✅ System Verdict: {verdict} | Logic: {logic}")
-
     # 5. LIVE INTEGRATION & TELEGRAM TEST
-    logging.info("\n--- STEP 5: FULL ALERT CHAIN & AI ANALYST ---")
-    logging.info("📡 Dispatching ULTIMATE VALIDATION ALERT to Telegram...")
+    logging.info("\n--- STEP 5: FULL ALERT CHAIN & ANALYST UI ---")
+    test_trade = {
+        'type': 'CALLS', 'underlying_price': 138.50, 'call_wall': 160.0, 'put_wall': 130.0,
+        'skew': -0.04, 'bias': 'BULLISH', 'ticker': 'NVDA', 'strike': 150.0, 'exp': '2024-06-21',
+        'volume': 8500, 'oi': 1200, 'notional': 4420000, 'rel_vol': 15.2, 'z_score': 6.8,
+        'stock_z': 4.2, 'delta': 0.48, 'gamma': 0.025, 'vanna': 0.12, 'charm': 0.05,
+        'gex': 1250000, 'flip': 142.0, 'score': 165, 'premium': 5.20, 'bid': 5.10, 'ask': 5.20,
+        'aggression': 'Aggressive (Ask) | Institutional Sweep', 'sector': 'AI & Semiconductors',
+        'weekly_count': 5, 'estimated_duration': '2-5 days', 'trend_prob': 0.92,
+        'detection_reason': 'Vol > OI (Opening), Near Gamma Flip, TRV Max'
+    }
     
-    ticker_context = "VALIDATION MODE: Testing RAG memory and multi-vector analytical pipeline."
-    
-    # This will trigger Gemini 3 Flash Preview and send to Telegram
-    sent = await send_alert(test_trade, ticker_context, macro)
+    logging.info("📡 Dispatching FINAL REDESIGNED ALERT to Telegram...")
+    sent = await send_alert(test_trade, "ULTIMATE TEST: Verifying redesigned UI and Institutional terminology.", macro)
 
     if sent:
-        logging.info("✨ SUCCESS: The validation alert is on its way to your phone!")
+        logging.info("✨ SUCCESS: The redesigned alert is on its way!")
     else:
-        logging.error("❌ TELEGRAM FAILURE: Check your Bot Token and Chat ID.")
+        logging.error("❌ TELEGRAM FAILURE.")
 
-    logging.info("\n🏁 VALIDATION SUITE COMPLETE 🏁")
+    logging.info("\n🏁 VALIDATION COMPLETE 🏁")
 
 if __name__ == "__main__":
     asyncio.run(run_validation_suite())

@@ -63,18 +63,18 @@ RESPONSE SCHEMA:
         elif "```" in text: text = text.split("```")[1].split("```")[0].strip()
         return json.loads(text)
     except: return None
-
 async def send_alert(trade, ticker_context="", macro_context=None):
     ai = get_ai_summary(trade, ticker_context, macro_context)
     if ai and not ai.get("is_unusual", True): return False
-    
+
     bot = Bot(token=TELEGRAM_TOKEN)
     stars = "⭐" * (ai['confidence_score'] // 20) if ai and 'confidence_score' in ai else "N/A"
-    
+
     sys_v, sys_l = generate_system_verdict(trade)
     final_v = ai['final_verdict'] if ai and 'final_verdict' in ai else sys_v
-    
+
     msg = f"""🚨 FLOWGOD ALPHA: {trade['ticker']} 🚨
+💎 Current Price: ${trade['underlying_price']:.2f}
 {stars} (Conviction: {ai['confidence_score'] if ai and 'confidence_score' in ai else '??'}%)
 
 🏁 VERDICT: {final_v}
@@ -87,13 +87,15 @@ Type: {trade['type']} {trade['strike']} | Exp: {trade['exp']}
 Agg: {trade['aggression']}
 Vol: {trade['volume']:,} | Notional: ${trade['notional']:,}
 
-📐 GREEKS & VELOCITY:
-GEX Pressure: ${trade['gex']:,}
-Hedge Decay (Color): {trade.get('decay_vel', 0)}
-Call Wall: ${trade['call_wall']} | Put Wall: ${trade['put_wall']}
-Gamma Flip: ${trade['flip']}
+📐 INSTITUTIONAL LEVELS:
+Flow Impact: ${trade['gex']:,}
+Timing Quality: {trade.get('decay_vel', 0)}
+Major Ceiling: ${trade['call_wall']} | Major Floor: ${trade['put_wall']}
+Trend Catalyst: ${trade['flip']}
 
 🗓️ CATALYST:
+...
+
 Earnings: {trade.get('earnings_date', 'N/A')} ({trade.get('earnings_dte', -1)} days)
 
 📢 CAMPAIGN:
