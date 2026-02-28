@@ -8,41 +8,30 @@ from datetime import datetime
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 from config import CLOUDFLARE_PROXY_URL
 
-# --- Cloudflare Bridge Adapter ---
-class CloudflareAdapter(requests.adapters.HTTPAdapter):
-    def __init__(self, proxy_url, *args, **kwargs):
-        self.proxy_url = proxy_url.rstrip('/')
-        super().__init__(*args, **kwargs)
-
-    def send(self, request, **kwargs):
-        # Support both query1 and query2 subdomains
-        if "finance.yahoo.com" in request.url:
-            original_url = request.url
-            # Match any queryX.finance.yahoo.com
-            request.url = re.sub(r'https://query\d\.finance\.yahoo\.com', self.proxy_url, request.url)
-            logging.debug(f"Bridging: {original_url} -> {request.url}")
-        return super().send(request, **kwargs)
-
-# Setup the Session with the Bridge
-session = requests.Session()
-session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-})
-
+# --- Cloudflare Bridge Monkey Patch ---
+# This forces yfinance (and all other requests) to route through your Worker
 if CLOUDFLARE_PROXY_URL:
-    adapter = CloudflareAdapter(CLOUDFLARE_PROXY_URL)
-    # Mount for both possible subdomains
-    session.mount("https://query1.finance.yahoo.com", adapter)
-    session.mount("https://query2.finance.yahoo.com", adapter)
-    logging.info(f"✅ Cloudflare Bridge ENABLED: {CLOUDFLARE_PROXY_URL}")
+    original_request = requests.Session.request
+    proxy_url = CLOUDFLARE_PROXY_URL.rstrip('/')
+
+    def proxied_request(self, method, url, *args, **kwargs):
+        if "finance.yahoo.com" in url:
+            new_url = re.sub(r'https://query\d\.finance\.yahoo\.com', proxy_url, url)
+            logging.debug(f"Bridging: {url} -> {new_url}")
+            return original_request(self, method, new_url, *args, **kwargs)
+        return original_request(self, method, url, *args, **kwargs)
+
+    requests.Session.request = proxied_request
+    logging.info(f"✅ Cloudflare Bridge Patched: {proxy_url}")
 else:
-    logging.error("❌ Cloudflare Bridge DISABLED: CLOUDFLARE_PROXY_URL not found in environment!")
-# ---------------------------------
+    logging.error("❌ Cloudflare Bridge DISABLED: CLOUDFLARE_PROXY_URL missing!")
+# ---------------------------------------
 
 def get_stock_info(ticker):
     """Fetches just the stock price and volume (Fast/Light)."""
     try:
-        stock = yf.Ticker(ticker, session=session)
+        # We let yfinance handle its own session now, our patch will catch it
+        stock = yf.Ticker(ticker)
         info = stock.fast_info
         return {
             'price': info.get('lastPrice', 0),
@@ -60,7 +49,7 @@ def get_stock_info(ticker):
 )
 def get_option_chain_data(ticker, price, stock_vol):
     """Fetches the heavy option chains only for hot stocks."""
-    stock = yf.Ticker(ticker, session=session)
+    stock = yf.Ticker(ticker)
     all_data = []
     
     try:
