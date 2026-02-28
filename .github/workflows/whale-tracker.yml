@@ -29,12 +29,13 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
         run: python main_github.py
 
       - name: Commit Files
         run: |
           git config --global user.name "FlowGod-Bot"
           git config --global user.email "bot@flowgod.ai"
-          git add historical_data.csv errors.log
+          git add historical_data.csv database.db errors.log
           git commit -m "Update persistent data and logs [skip ci]" || echo "No changes to commit"
           git push origin master
