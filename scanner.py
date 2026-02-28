@@ -79,7 +79,6 @@ def calculate_hvn_conviction(df_1m, t_type, spot):
     except: return 1.0, "N/A"
 
 def predict_trend_probability(df_1m, call_wall, put_wall):
-    """Tier-4: Calculates probability of move ignition using VWAP and Walls."""
     if df_1m is None or len(df_1m) < 30: return 0.5
     try:
         last_p = df_1m['Close'].iloc[-1]
@@ -127,8 +126,6 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
     call_wall, put_wall, flip = map_gex_walls(df)
     total_decay_vel = int(df['decay_vel'].sum())
     spot = df.iloc[0]['underlying_price']
-    
-    # Tier-4 Trend Prob
     trend_p = predict_trend_probability(candle_df, call_wall, put_wall)
     
     trv_label, trv_bonus = "Standard Flow", 10
@@ -144,11 +141,22 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
     for _, row in df.iterrows():
         agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
         hvn_conv, hvn_label = calculate_hvn_conviction(candle_df, row['side'].upper(), spot)
+        
+        # PUT-INSIDER FILTER: Hedgers buy Puts when IV is high. Insiders buy when IV is LOW (cheap).
+        iv = row.get('impliedVolatility', 0)
+        is_cheap_put = (row['side'] == 'puts') and (iv < 0.45) 
+        is_skew_inverted = (row['side'] == 'puts') and (skew > 0.12) # Bearish bias confirmed by surface
+        
         score = 0
         if row['volume'] > 1000: score += 20
         if row['notional'] > 500000: score += 40
         score += agg_bonus + trv_bonus
-        if trend_p > 0.85: score += 30 # Trend ignition bonus
+        if trend_p > 0.85: score += 30 
+        
+        # PUT SPECIFIC BONUSES
+        if is_cheap_put: score += 45 # Institutional characteristic: buying protection while it's cheap
+        if is_skew_inverted: score += 55 # Severe bearish institutional divergence
+        
         if abs(spot - call_wall) / spot < 0.01: score -= 30
         if (vol_bias == "BULLISH" and row['side'] == 'calls') or (vol_bias == "BEARISH" and row['side'] == 'puts'): score += 40
         
@@ -164,7 +172,7 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
                 'skew': skew, 'bias': vol_bias, 'score': score, 'trend_prob': trend_p,
                 'aggression': f"{agg_label} | {trv_label} | {hvn_label}",
                 'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
-                'hype_z': round(hype_z, 1), 'detection_reason': f"Score {score} | {hvn_label} | {vol_bias}"
+                'hype_z': round(hype_z, 1), 'detection_reason': f"Score {score} | {hvn_label} | {'INSIDER PUT' if is_cheap_put else vol_bias}"
             })
     return pd.DataFrame(results)
 
