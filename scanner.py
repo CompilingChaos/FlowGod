@@ -2,16 +2,17 @@ import pandas as pd
 from historical_db import get_stats, get_ticker_baseline
 from config import MIN_VOLUME, MIN_NOTIONAL, MIN_VOL_OI_RATIO, MIN_RELATIVE_VOL, MIN_STOCK_Z_SCORE
 
-def score_unusual(df, ticker):
-    results = []
-    
-    # Calculate Stock-Level Volume Heat
+def get_stock_heat(ticker, live_vol):
+    """Checks if the stock volume is unusual (Light Check)."""
     baseline = get_ticker_baseline(ticker)
-    stock_z = 0
-    if baseline and not df.empty:
-        stock_vol = df.iloc[0]['underlying_vol']
-        if baseline['std_dev'] > 0:
-            stock_z = (stock_vol - baseline['avg_vol']) / baseline['std_dev']
+    if baseline and baseline['std_dev'] > 0:
+        z_score = (live_vol - baseline['avg_vol']) / baseline['std_dev']
+        return z_score
+    return 0
+
+def score_unusual(df, ticker, stock_z):
+    results = []
+    if df.empty: return pd.DataFrame()
 
     for _, row in df.iterrows():
         contract = row['contractSymbol']
