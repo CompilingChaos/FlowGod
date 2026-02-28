@@ -154,13 +154,15 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
     spot = df.iloc[0]['underlying_price']
     trend_p = predict_trend_probability(candle_df, call_wall, put_wall)
     
-    logging.info(f"DEBUG: df columns in score_unusual: {df.columns.tolist()}")
-    
     results = []
     for _, row in df.iterrows():
         agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
         hvn_conv, hvn_label = calculate_hvn_conviction(candle_df, row['side'].upper(), spot)
         iv = row.get('impliedVolatility', 0)
+        
+        # Defensive check for expiration date
+        expiration = row.get('exp') or row.get('expiration') or "N/A"
+        
         is_cheap_put = (row['side'] == 'puts') and (iv < 0.45) 
         is_skew_inverted = (row['side'] == 'puts') and (skew > 0.12)
         
@@ -183,7 +185,7 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
         if (row['volume'] > row['openInterest'] and row['volume'] > 500) or score >= 85:
             results.append({
                 'ticker': ticker, 'contract': row['contractSymbol'], 'type': row['side'].upper(),
-                'strike': row['strike'], 'exp': row['exp'], 'volume': int(row['volume']),
+                'strike': row['strike'], 'exp': expiration, 'volume': int(row['volume']),
                 'oi': int(row['openInterest']), 'premium': round(row['lastPrice'], 2),
                 'notional': int(row['notional']), 'rel_vol': round(row['volume']/(get_stats(ticker, row['contractSymbol'])['avg_vol']+1), 1),
                 'delta': row['delta'], 'gamma': row['gamma'], 'vanna': row['vanna'], 'charm': row['charm'],
