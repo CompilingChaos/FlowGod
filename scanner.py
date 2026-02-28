@@ -90,18 +90,35 @@ def predict_trend_probability(df_1m, call_wall, put_wall):
         return round(min(0.99, norm.cdf(z) * wall_mult), 2)
     except: return 0.5
 
-def detect_icebergs(df_1m):
-    if df_1m is None or len(df_1m) < 30: return False
+def detect_microstructure_conviction(df_1m):
+    """
+    Tier-3: Multi-Layer Microstructure Engine.
+    Identifies Icebergs, Sweeps, and Absorption without external tape.
+    """
+    if df_1m is None or len(df_1m) < 30: return "Standard", 0
     try:
+        # 1. Iceberg Detection (Effort vs Result)
         tr = (df_1m['High'] - df_1m['Low']).replace(0, 0.01)
         df_1m['vol_density'] = df_1m['Volume'] / tr
         roll_mean = df_1m['vol_density'].rolling(window=30).mean()
         roll_std = df_1m['vol_density'].rolling(window=30).std()
         df_1m['iceberg_z'] = (df_1m['vol_density'] - roll_mean) / (roll_std + 0.1)
         vol_90 = df_1m['Volume'].quantile(0.90)
-        latest = df_1m.iloc[-5:] 
-        return ((latest['iceberg_z'] > 3.0) & (latest['Volume'] > vol_90)).any()
-    except: return False
+        
+        last_c = df_1m.iloc[-1]
+        is_iceberg = (last_c['iceberg_z'] > 3.0) and (last_c['Volume'] > vol_90)
+        
+        # 2. Sweep Aggression (Candle Shape + VWAP)
+        buyer_agg = (last_c['Close'] - last_c['Low']) / (last_c['High'] - last_c['Low'] + 0.01)
+        vwap = df_1m['VWAP'].iloc[-1] if 'VWAP' in df_1m.columns else last_c['Close']
+        is_sweep = buyer_agg > 0.8 and last_c['Close'] > vwap
+        
+        if is_iceberg and is_sweep: return "🚨 INSTITUTIONAL SWEEP (Iceberg Broken) 🚨", 80
+        if is_iceberg: return "🧊 ICEBERG ABSORPTION (Dark Proxy) 🧊", 65
+        if is_sweep: return "🚀 AGGRESSIVE SWEEP (Lifting Ask) 🚀", 50
+        return "Passive/Neutral Flow", 10
+    except:
+        return "Unknown", 0
 
 def classify_aggression(last_price, bid, ask):
     if last_price >= ask and ask > 0: return "Aggressive (Ask)", 50
