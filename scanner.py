@@ -154,6 +154,8 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
     spot = df.iloc[0]['underlying_price']
     trend_p = predict_trend_probability(candle_df, call_wall, put_wall)
     
+    logging.info(f"DEBUG: df columns in score_unusual: {df.columns.tolist()}")
+    
     results = []
     for _, row in df.iterrows():
         agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
