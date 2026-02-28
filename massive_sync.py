@@ -50,7 +50,7 @@ def sync_baselines():
                     else:
                         logging.warning(f"Not enough data for {ticker} (AlphaV)")
                 else:
-                    err = data.get("Note") or data.get("Error Message") or "Unknown AlphaV Error"
+                    err = data.get("Note") or data.get("Error Message") or f"Unknown AlphaV Error: {data}"
                     logging.error(f"Alpha Vantage failed for {ticker}: {err}")
                 
                 # Alpha Vantage Rate Limit: 5 calls per minute -> 15 sec delay
