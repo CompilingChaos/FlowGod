@@ -9,6 +9,12 @@ from historical_db import update_ticker_baseline
 
 import yfinance as yf
 
+# Persistent Session for yfinance to avoid rate limits
+yf_session = requests.Session()
+yf_session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+})
+
 def sync_baselines():
     if not MASSIVE_API_KEY:
         logging.error("No MASSIVE_API_KEY found. Skipping sync.")
@@ -26,14 +32,13 @@ def sync_baselines():
     end_date = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=63)).strftime('%Y-%m-%d') 
 
-    count = 0
-    for ticker in watchlist:
+    for i, ticker in enumerate(watchlist):
         try:
             # OPTION 1: Non-US Ticker (Use yfinance as fallback)
             if "." in ticker:
                 logging.info(f"Syncing non-US ticker {ticker} via yfinance fallback...")
-                stock = yf.Ticker(ticker)
-                hist = stock.history(period="60d") # Get 60 days to be safe
+                stock = yf.Ticker(ticker, session=yf_session)
+                hist = stock.history(period="60d") 
                 if not hist.empty and 'Volume' in hist:
                     volumes = hist['Volume'].tail(BASELINE_DAYS).tolist()
                     if len(volumes) > 5:
@@ -41,6 +46,9 @@ def sync_baselines():
                         std_dev = np.std(volumes)
                         update_ticker_baseline(ticker, avg_vol, std_dev)
                         logging.info(f"Updated {ticker} (yfinance): Avg Vol {avg_vol:,.0f}")
+                
+                # Sleep even for yfinance to avoid GitHub Actions IP blocks
+                time.sleep(5)
                 continue
 
             # OPTION 2: US Ticker (Use Massive.com)
@@ -62,14 +70,13 @@ def sync_baselines():
                 error_msg = data.get('error') or data.get('status') or "Unknown API Error"
                 logging.error(f"Massive.com error for {ticker} (Status {response.status_code}): {error_msg}")
 
-            count += 1
-            # Rate Limit: 5 requests per minute -> 12 seconds per request
-            if count < len(watchlist):
+            # Rate Limit: 5 requests per minute for Massive.com
+            if i < len(watchlist) - 1:
                 time.sleep(13) 
 
         except Exception as e:
             logging.error(f"Sync failed for {ticker}: {e}")
-            time.sleep(1)
+            time.sleep(5)
 
 if __name__ == "__main__":
     sync_baselines()
