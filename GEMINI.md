@@ -1,0 +1,33 @@
+# FlowGod Whale Tracker
+
+FlowGod is a sophisticated options flow scanner and whale tracking tool, inspired by platforms like Unusual Whales. It identifies institutional-grade trades, unusual volume-to-open-interest ratios, and aggressive "sweep" orders across the US equity markets.
+
+## Project Overview
+
+- **Unusual Activity Detection**: Scans for trades where Volume exceeds Open Interest by significant margins or where notional values indicate "whale" activity.
+- **AI-Powered Analysis**: Integrates with Google Gemini to provide context-aware reasoning for each alert, analyzing historical trends and market sentiment.
+- **Automated Execution**: Optimized for GitHub Actions to run periodic scans without dedicated infrastructure.
+- **Multi-Channel Alerts**: Delivers real-time notifications via Telegram with detailed trade breakdowns.
+- **Historical Tracking**: Maintains a persistent record of unusual activity to avoid duplicate alerts and provide long-term context.
+
+## Core Mandates
+
+- **GitHub Integration**: Every change made to the codebase MUST be committed to GitHub.
+- **Documentation Maintenance**: The `GEMINI.md` file must be updated whenever significant changes, new features, or structural modifications are implemented.
+- **Testing**: Before committing, ensure that the scanning logic and alert delivery remain functional.
+
+## Tech Stack
+
+- **Data Source**: `yfinance` (Yahoo Finance API)
+- **Language**: Python 3.14+
+- **Database**: SQLite (bridged with CSV for GitHub persistence)
+- **AI Engine**: Google Gemini Pro
+- **Communication**: Telegram Bot API
+- **Workflow**: GitHub Actions
+
+## Key Thresholds (Configurable in `config.py`)
+
+- `MIN_VOLUME`: Minimum contract volume to consider (Default: 300)
+- `MIN_NOTIONAL`: Minimum dollar value of the trade (Default: $15,000)
+- `MIN_VOL_OI_RATIO`: Minimum Volume/Open Interest ratio (Default: 6.0x)
+- `MAX_TICKERS`: Maximum number of tickers scanned per cycle (Default: 150)
