@@ -56,16 +56,33 @@ def map_gex_walls(df):
         return call_wall, put_wall, flip
     except: return 0, 0, 0
 
-def calculate_trv_aggression(candle, ticker):
-    if not candle: return "Unknown", 0
+def calculate_hvn_conviction(df_1m, t_type, spot):
+    """
+    Tier-3 Lie Detector: Verifies if the stock cleared the High Volume Node (HVN).
+    """
+    if df_1m is None or len(df_1m) < 20: return 1.0, "N/A"
     try:
+        # Day's Point of Control (POC)
+        price_bins = np.round(df_1m['Close'] * 10) / 10
+        hvn_price = df_1m.groupby(price_bins)['Volume'].sum().idxmax()
+        conviction, label = 1.0, "POC Cleansed"
+        if "CALL" in t_type:
+            if spot < hvn_price: conviction, label = 0.3, f"Trap: Below HVN (${hvn_price})"
+        else:
+            if spot > hvn_price: conviction, label = 0.3, f"Trap: Above HVN (${hvn_price})"
+        return conviction, label
+    except: return 1.0, "N/A"
+
+def calculate_trv_aggression(candle_df, ticker):
+    if candle_df is None or not isinstance(candle_df, pd.DataFrame): return "Unknown", 0
+    try:
+        candle = candle_df.iloc[-1]
         range_total = candle['High'] - candle['Low']
         if range_total == 0: return "Neutral", 5
         buyer_agg = (candle['Close'] - candle['Low']) / range_total
-        if buyer_agg > 0.8 and candle['Close'] > candle['vwap']:
+        vwap = candle_df['VWAP'].iloc[-1] if 'VWAP' in candle_df.columns else candle['Close']
+        if buyer_agg > 0.8 and candle['Close'] > vwap:
             return "Institutional Sweep (TRV Max)", 50
-        if candle.get('dark_z_max', 0) > 4.0:
-            return "Dark Pool Absorption", 60
         return "Standard Flow", 10
     except: return "Unknown", 0
 
@@ -74,7 +91,7 @@ def classify_aggression(last_price, bid, ask):
     if last_price <= bid and bid > 0: return "Passive (Bid)", 0
     return "Neutral (Mid)", 10
 
-def score_unusual(df, ticker, stock_z, sector="Unknown", candle=None):
+def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None):
     if df.empty: return pd.DataFrame()
     skew, contango, vol_bias = calculate_volatility_surface(df)
     for idx, row in df.iterrows():
@@ -84,19 +101,26 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle=None):
         df.at[idx, 'gex'] = g * row['openInterest'] * 100 * row['underlying_price']
     call_wall, put_wall, flip = map_gex_walls(df)
     spot = df.iloc[0]['underlying_price']
-    trv_label, trv_bonus = calculate_trv_aggression(candle, ticker)
+    
+    trv_label, trv_bonus = calculate_trv_aggression(candle_df, ticker)
     baseline = get_ticker_baseline(ticker)
     trust_mult = baseline.get('trust_score', 1.0) if baseline else 1.0
     results = []
+
     for _, row in df.iterrows():
         agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
+        hvn_conv, hvn_label = calculate_hvn_conviction(candle_df, row['side'].upper(), spot)
+        
         score = 0
         if row['volume'] > 1000: score += 20
         if row['notional'] > 500000: score += 40
         score += agg_bonus + trv_bonus
         if abs(spot - call_wall) / spot < 0.01: score -= 30
         if (vol_bias == "BULLISH" and row['side'] == 'calls') or (vol_bias == "BEARISH" and row['side'] == 'puts'): score += 40
-        score = int(score * trust_mult)
+        
+        # FINAL SCORING WITH HVN CONVICTION
+        score = int(score * trust_mult * hvn_conv)
+        
         if (row['volume'] > row['openInterest'] and row['volume'] > 500) or score >= 85:
             results.append({
                 'ticker': ticker, 'contract': row['contractSymbol'], 'type': row['side'].upper(),
@@ -105,34 +129,26 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle=None):
                 'notional': int(row['notional']), 'rel_vol': round(row['volume']/(get_stats(ticker, row['contractSymbol'])['avg_vol']+1), 1),
                 'delta': row['delta'], 'gamma': row['gamma'], 'vanna': row['vanna'], 'charm': row['charm'],
                 'gex': int(row['gex']), 'call_wall': call_wall, 'put_wall': put_wall, 'flip': flip,
-                'skew': skew, 'bias': vol_bias, 'score': score, 'aggression': f"{agg_label} | {trv_label}",
+                'skew': skew, 'bias': vol_bias, 'score': score, 'aggression': f"{agg_label} | {trv_label} | {hvn_label}",
                 'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
-                'detection_reason': f"Score {score} | {vol_bias} Skew"
+                'detection_reason': f"Score {score} | {hvn_label} | {vol_bias}"
             })
     return pd.DataFrame(results)
 
 def generate_system_verdict(trade):
-    """Generates a math-driven trade recommendation for Trade Republic."""
-    t_type = trade['type']
-    spot = trade.get('underlying_price', 0)
-    call_wall = trade.get('call_wall', 0)
-    put_wall = trade.get('put_wall', 0)
-    skew = trade.get('skew', 0)
-    agg = trade.get('aggression', "")
-    
-    verdict, logic = "NEUTRAL", "Insufficient data for conviction."
-    
+    t_type, spot = trade['type'], trade.get('underlying_price', 0)
+    call_wall, put_wall = trade.get('call_wall', 0), trade.get('put_wall', 0)
+    skew, agg = trade.get('skew', 0), trade.get('aggression', "")
+    verdict, logic = "NEUTRAL", "Insufficient conviction."
     if "CALL" in t_type and "Aggressive" in agg:
-        if skew < 0: verdict, logic = "CALL (Long)", "Aggressive Call sweep with Bullish Skew."
-        elif spot > 0 and put_wall > 0 and (spot - put_wall) / spot < 0.02: verdict, logic = "CALL (Long)", "Whale entry at Put Wall support."
-        else: verdict, logic = "BUY (Stock)", "Bullish flow but Skew/Walls suggest conservative entry."
+        if skew < 0: verdict, logic = "CALL (Long)", "Aggressive sweep + Bullish Skew."
+        elif spot > 0 and put_wall > 0 and (spot - put_wall) / spot < 0.02: verdict, logic = "CALL (Long)", "Support bounce at Put Wall."
+        else: verdict, logic = "BUY (Stock)", "Bullish flow, conservative tech."
     elif "PUT" in t_type and "Aggressive" in agg:
-        if skew > 0.05: verdict, logic = "PUT (Short)", "Aggressive Put sweep with Bearish Skew."
-        elif spot > 0 and call_wall > 0 and (call_wall - spot) / spot < 0.02: verdict, logic = "PUT (Short)", "Whale entry at Call Wall resistance."
-        else: verdict, logic = "PUT (Short)", "Bearish flow detected with moderate conviction."
-    elif "Dark Pool" in agg or "Absorption" in agg:
-        verdict, logic = "BUY (Stock)", "Institutional absorption detected. Long-term accumulation."
-
+        if skew > 0.05: verdict, logic = "PUT (Short)", "Aggressive sweep + Bearish Skew."
+        elif spot > 0 and call_wall > 0 and (call_wall - spot) / spot < 0.02: verdict, logic = "PUT (Short)", "Resistance rejection at Call Wall."
+        else: verdict, logic = "PUT (Short)", "Bearish flow detected."
+    elif "Dark Pool" in agg: verdict, logic = "BUY (Stock)", "Institutional absorption."
     return verdict, logic
 
 def process_results(all_results, macro_context, sector_performance):
@@ -146,9 +162,8 @@ def process_results(all_results, macro_context, sector_performance):
                 if len(legs) >= 2:
                     leg1, leg2 = legs.iloc[0], legs.iloc[1]
                     if abs(leg1['volume'] - leg2['volume']) / max(leg1['volume'], 1) < 0.2:
-                        strategy = "Bull Call Spread" if side == 'CALLS' else "Bear Put Spread"
                         best_leg = legs.loc[legs['score'].idxmax()].to_dict()
-                        best_leg['type'] = f"🔗 {strategy.upper()}"
+                        best_leg['type'] = f"🔗 {side[:-1]} SPREAD"
                         best_leg['strike'] = f"{leg1['strike']} / {leg2['strike']}"
                         best_leg['notional'] = legs['notional'].sum()
                         best_leg['score'] += 40
@@ -158,7 +173,7 @@ def process_results(all_results, macro_context, sector_performance):
     for ticker, t_group in df.groupby('ticker'):
         if len(t_group) >= 3:
             best = t_group.loc[t_group['score'].idxmax()].to_dict()
-            best['type'] = "📦 TICKER CLUSTER 📦"
+            best['type'] = "📦 CLUSTER 📦"
             best['notional'], best['volume'] = t_group['notional'].sum(), t_group['volume'].sum()
             best['score'] += 50
             final_alerts.append(best)

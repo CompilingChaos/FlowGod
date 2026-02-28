@@ -72,11 +72,8 @@ def get_intraday_aggression(ticker):
         rolling_std = df['vol_density'].rolling(window=30).std()
         df['dark_z'] = (df['vol_density'] - rolling_mean) / rolling_std
         
-        candle = df.iloc[-1].to_dict()
-        candle['vwap'] = df['VWAP'].iloc[-1]
-        candle['dark_z_max'] = df['dark_z'].iloc[-5:].max()
-        candle['prev_close'] = df['Close'].iloc[-2]
-        return candle
+        # Return full DF for HVN analysis in scanner.py
+        return df
     except: return None
 
 def get_stock_info(ticker):
