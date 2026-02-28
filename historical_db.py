@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import math
 import logging
+import re
 from datetime import datetime, timedelta
 from config import DB_FILE
 
@@ -14,9 +15,11 @@ def init_db():
         # Options History
         conn.execute('''CREATE TABLE IF NOT EXISTS hist_vol_oi 
                      (ticker TEXT, contract TEXT, date TEXT, volume INTEGER, oi INTEGER)''')
-        # Alert Tracking
+        # Alert Tracking (Vector 5 Refined)
         conn.execute('''CREATE TABLE IF NOT EXISTS alerts_sent 
-                     (contract TEXT PRIMARY KEY, timestamp TEXT, confirmed INTEGER DEFAULT 0)''')
+                     (contract TEXT PRIMARY KEY, timestamp TEXT, 
+                      alert_vol INTEGER, alert_oi INTEGER,
+                      confirmed INTEGER DEFAULT 0)''')
         # Stock Baselines
         conn.execute('''CREATE TABLE IF NOT EXISTS ticker_stats 
                      (ticker TEXT PRIMARY KEY, avg_vol REAL, std_dev REAL, sector TEXT, 
@@ -31,7 +34,6 @@ def update_ticker_baseline(ticker, avg_vol, std_dev, sector="Unknown"):
     conn = init_db()
     if not conn: return
     try:
-        # Preserve trust_score on update
         res = conn.execute("SELECT trust_score FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
         current_trust = res[0] if res else 1.0
         
@@ -59,9 +61,20 @@ def update_trust_score(ticker, change):
     if not conn: return
     try:
         conn.execute("UPDATE ticker_stats SET trust_score = trust_score + ? WHERE ticker = ?", (change, ticker))
-        # Clamp trust score between 0.5 and 2.0
         conn.execute("UPDATE ticker_stats SET trust_score = 2.0 WHERE trust_score > 2.0")
         conn.execute("UPDATE ticker_stats SET trust_score = 0.5 WHERE trust_score < 0.5")
+        conn.commit()
+    finally:
+        conn.close()
+
+def mark_alert_sent(contract, vol=0, oi=0):
+    conn = init_db()
+    if not conn: return
+    try:
+        conn.execute("""INSERT OR REPLACE INTO alerts_sent 
+                     (contract, timestamp, alert_vol, alert_oi, confirmed) 
+                     VALUES (?, ?, ?, ?, 0)""",
+                     (contract, datetime.now().isoformat(), vol, oi))
         conn.commit()
     finally:
         conn.close()
@@ -70,9 +83,8 @@ def get_unconfirmed_alerts():
     conn = init_db()
     if not conn: return []
     try:
-        # Get alerts from the last 48 hours that haven't been confirmed
         cutoff = (datetime.now() - timedelta(hours=48)).isoformat()
-        res = conn.execute("SELECT contract, timestamp FROM alerts_sent WHERE confirmed = 0 AND timestamp > ?", (cutoff,)).fetchall()
+        res = conn.execute("SELECT contract, alert_vol, alert_oi FROM alerts_sent WHERE confirmed = 0 AND timestamp > ?", (cutoff,)).fetchall()
         return res
     finally:
         conn.close()
@@ -87,16 +99,13 @@ def mark_alert_confirmed(contract, status=1):
         conn.close()
 
 def needs_baseline_update(ticker):
-    """Checks if the ticker baseline was updated today."""
     conn = init_db()
     if not conn: return True
     try:
         res = conn.execute("SELECT last_updated FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
         if not res: return True
-        
         last_updated = datetime.fromisoformat(res[0]).date()
-        today = datetime.now().date()
-        return last_updated < today
+        return last_updated < datetime.now().date()
     finally:
         conn.close()
 
@@ -126,26 +135,22 @@ def get_ticker_context(ticker, days=2):
     conn = init_db()
     if not conn: return "No historical context available."
     cutoff = (datetime.now() - timedelta(days=days)).date().isoformat()
-    
     query = """
         SELECT date, SUM(volume) as total_vol, SUM(oi) as total_oi 
-        FROM hist_vol_oi 
-        WHERE ticker = ? AND date >= ?
+        FROM hist_vol_oi WHERE ticker = ? AND date >= ?
         GROUP BY date ORDER BY date DESC
     """
     try:
         df = pd.read_sql_query(query, conn, params=(ticker, cutoff))
         conn.close()
-        if df.empty:
-            return "First time seeing this ticker in 48 hours."
-        
+        if df.empty: return "First time seeing this ticker in 48 hours."
         context_str = "Last 48h Context:\n"
         for _, row in df.iterrows():
             context_str += f"- {row['date']}: Vol {row['total_vol']:,}, OI {row['total_oi']:,}\n"
         return context_str
     except Exception as e:
-        logging.error(f"Context retrieval failed for {ticker}: {e}")
-        return "Context unavailable due to error."
+        logging.error(f"Context retrieval failed: {e}")
+        return "Context unavailable."
 
 def update_historical(ticker, chain_df):
     conn = init_db()
@@ -165,12 +170,9 @@ def get_stats(ticker, contract, days=30):
     if not conn: return {'avg_vol': 0, 'avg_oi': 0, 'std_dev': 0}
     cutoff = (datetime.now() - timedelta(days=days)).date().isoformat()
     query = """
-        SELECT 
-            AVG(volume) as avg_vol, 
-            AVG(oi) as avg_oi,
-            AVG(volume * volume) - (AVG(volume) * AVG(volume)) as variance
-        FROM hist_vol_oi 
-        WHERE ticker=? AND contract=? AND date >= ?
+        SELECT AVG(volume) as avg_vol, AVG(oi) as avg_oi,
+               AVG(volume * volume) - (AVG(volume) * AVG(volume)) as variance
+        FROM hist_vol_oi WHERE ticker=? AND contract=? AND date >= ?
     """
     try:
         df = pd.read_sql_query(query, conn, params=(ticker, contract, cutoff))
@@ -181,7 +183,7 @@ def get_stats(ticker, contract, days=30):
         std_dev = math.sqrt(max(0, row['variance']))
         return {'avg_vol': row['avg_vol'], 'avg_oi': row['avg_oi'], 'std_dev': std_dev}
     except Exception as e:
-        logging.error(f"Stats query failed for {ticker}: {e}")
+        logging.error(f"Stats query failed: {e}")
         return {'avg_vol': 0, 'avg_oi': 0, 'std_dev': 0}
 
 def is_alert_sent(contract):
@@ -193,11 +195,3 @@ def is_alert_sent(contract):
     res = conn.execute("SELECT 1 FROM alerts_sent WHERE contract = ?", (contract,)).fetchone()
     conn.close()
     return res is not None
-
-def mark_alert_sent(contract):
-    conn = init_db()
-    if not conn: return
-    conn.execute("INSERT OR REPLACE INTO alerts_sent (contract, timestamp) VALUES (?, ?)",
-                 (contract, datetime.now().isoformat()))
-    conn.commit()
-    conn.close()

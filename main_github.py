@@ -65,50 +65,41 @@ async def process_ticker_sequential(ticker):
         return []
 
 async def verify_stickiness():
-    """Checks if yesterday's whales held their positions."""
+    """Refined Vector 5 Stickiness Check."""
     unconfirmed = get_unconfirmed_alerts()
     if not unconfirmed: return
 
     logging.info(f"Verifying stickiness for {len(unconfirmed)} past alerts...")
     
-    for contract, timestamp in unconfirmed:
+    for contract, yest_vol, yest_oi in unconfirmed:
         try:
             # 1. Fetch current live OI
             live_oi = get_contract_oi(contract)
             if live_oi == 0: continue 
 
-            # 2. Get historical data
+            # 2. Extract ticker
             ticker_match = re.match(r'^([A-Z]+)', contract)
             if not ticker_match: continue
             ticker = ticker_match.group(1)
             
-            conn = init_db()
-            # Get last 2 records for this contract to see yesterday's stats
-            hist = conn.execute("SELECT volume, oi FROM hist_vol_oi WHERE contract = ? ORDER BY date DESC LIMIT 2", (contract,)).fetchall()
-            conn.close()
-
-            if len(hist) < 2: continue
-            
-            yest_vol = hist[0][0]
-            yest_oi = hist[1][1]
+            # 3. Vector 5 Math: How much of yesterday's volume translated to new OI?
             oi_change = live_oi - yest_oi
-            
-            # 3. Calculate Stickiness %
-            if yest_vol > 0:
-                percentage = (oi_change / yest_vol) * 100
-                if percentage > 70:
-                    logging.info(f"✅ CONFIRMED: {contract} held {percentage:.1f}% overnight.")
-                    await send_confirmation_alert(ticker, contract, oi_change, percentage)
-                    update_trust_score(ticker, 0.1)
-                    mark_alert_confirmed(contract, 1)
-                elif percentage < 10:
-                    logging.info(f"❌ FADED: {contract} only held {percentage:.1f}%.")
-                    update_trust_score(ticker, -0.05)
-                    mark_alert_confirmed(contract, -1)
-                else:
-                    mark_alert_confirmed(contract, 2) # Partial
+            stickiness_ratio = oi_change / yest_vol if yest_vol > 0 else 0
+            percentage = stickiness_ratio * 100
+
+            if stickiness_ratio >= 0.70: # 70% HELD
+                logging.info(f"✅ VECTOR 5 CONFIRMED: {contract} held {percentage:.1f}%")
+                await send_confirmation_alert(ticker, contract, oi_change, percentage)
+                update_trust_score(ticker, 0.15) # Aggressive Vector 5 reward
+                mark_alert_confirmed(contract, 1)
+            elif stickiness_ratio < 0.20: # 20% FADE (Day Trade)
+                logging.info(f"❌ VECTOR 5 FADED: {contract} only held {percentage:.1f}%")
+                update_trust_score(ticker, -0.05) # Penalty for noise
+                mark_alert_confirmed(contract, -1)
+            else:
+                mark_alert_confirmed(contract, 2) # Neutral
         except Exception as e:
-            logging.error(f"Stickiness check failed for {contract}: {e}")
+            logging.error(f"Vector 5 Check failed for {contract}: {e}")
 
 async def scan_cycle():
     # 1. Pre-Scan Prep
@@ -147,7 +138,9 @@ async def scan_cycle():
 
         logging.info(f"Analyzing high-conviction flow for {trade['ticker']}...")
         sent = await send_alert(trade, context, macro)
-        mark_alert_sent(trade['contract'])
+        
+        # VECTOR 5: Store EXACT vol and oi at time of alert
+        mark_alert_sent(trade['contract'], vol=trade['volume'], oi=trade['oi'])
 
         if sent:
             logging.info(f"Alert SENT for {trade['ticker']}!")
