@@ -19,19 +19,19 @@ def init_db():
                      (contract TEXT PRIMARY KEY, timestamp TEXT)''')
         # Stock Baselines (Massive.com)
         conn.execute('''CREATE TABLE IF NOT EXISTS ticker_stats 
-                     (ticker TEXT PRIMARY KEY, avg_vol REAL, std_dev REAL, last_updated TEXT)''')
+                     (ticker TEXT PRIMARY KEY, avg_vol REAL, std_dev REAL, sector TEXT, last_updated TEXT)''')
         conn.commit()
         return conn
     except Exception as e:
         logging.error(f"DB Init Error: {e}")
         return None
 
-def update_ticker_baseline(ticker, avg_vol, std_dev):
+def update_ticker_baseline(ticker, avg_vol, std_dev, sector="Unknown"):
     conn = init_db()
     if not conn: return
     try:
-        conn.execute("INSERT OR REPLACE INTO ticker_stats VALUES (?, ?, ?, ?)",
-                     (ticker, avg_vol, std_dev, datetime.now().isoformat()))
+        conn.execute("INSERT OR REPLACE INTO ticker_stats (ticker, avg_vol, std_dev, sector, last_updated) VALUES (?, ?, ?, ?, ?)",
+                     (ticker, avg_vol, std_dev, sector, datetime.now().isoformat()))
         conn.commit()
     finally:
         conn.close()
@@ -40,9 +40,9 @@ def get_ticker_baseline(ticker):
     conn = init_db()
     if not conn: return None
     try:
-        res = conn.execute("SELECT avg_vol, std_dev FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
+        res = conn.execute("SELECT avg_vol, std_dev, sector FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
         if res:
-            return {'avg_vol': res[0], 'std_dev': res[1]}
+            return {'avg_vol': res[0], 'std_dev': res[1], 'sector': res[2]}
         return None
     finally:
         conn.close()
