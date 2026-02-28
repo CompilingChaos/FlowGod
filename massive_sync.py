@@ -67,15 +67,18 @@ def sync_baselines():
             response = requests.get(url)
             data = response.json()
 
-            if response.status_code == 200 and data.get('status') == 'OK' and 'results' in data:
-                volumes = [day['v'] for day in data['results']]
-                if len(volumes) > 5:
-                    avg_vol = np.mean(volumes)
-                    std_dev = np.std(volumes)
-                    update_ticker_baseline(ticker, avg_vol, std_dev)
-                    logging.info(f"Updated {ticker} (Massive): Avg Vol {avg_vol:,.0f}")
+            if response.status_code == 200 and data.get('status') == 'OK':
+                if 'results' in data and len(data['results']) > 0:
+                    volumes = [day['v'] for day in data['results']]
+                    if len(volumes) > 5:
+                        avg_vol = np.mean(volumes)
+                        std_dev = np.std(volumes)
+                        update_ticker_baseline(ticker, avg_vol, std_dev)
+                        logging.info(f"Updated {ticker} (Massive): Avg Vol {avg_vol:,.0f}")
+                    else:
+                        logging.warning(f"Not enough data for {ticker} (got {len(volumes)} days)")
                 else:
-                    logging.warning(f"Not enough data for {ticker} (got {len(volumes)} days)")
+                    logging.warning(f"Massive.com returned OK but no results for {ticker} (Check if ticker is active)")
             else:
                 error_msg = data.get('error') or data.get('status') or "Unknown Massive Error"
                 logging.error(f"Massive.com error for {ticker} (Status {response.status_code}): {error_msg}")
