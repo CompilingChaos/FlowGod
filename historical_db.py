@@ -41,7 +41,6 @@ def update_ticker_baseline(ticker, avg_vol, std_dev, sector="Unknown", social_ve
         current_trust = res[0] if res else 1.0
         new_social = social_vel if social_vel > 0 else (res[1] if res else 0.0)
         final_earnings = earnings_date if earnings_date else (res[2] if res else None)
-        
         conn.execute("""INSERT OR REPLACE INTO ticker_stats 
                      (ticker, avg_vol, std_dev, sector, trust_score, avg_social_vel, earnings_date, last_updated) 
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -101,6 +100,17 @@ def get_rag_context(ticker, trade_type):
         avg_move = df['outcome_3d'].mean() * 100
         return f"RAG PRECEDENT: Last 10 similar {trade_type} on {ticker} had a {win_rate:.0%} win rate. Avg 3-day move: {avg_move:.1f}%."
     except: return "Memory system unavailable."
+
+def get_weekly_campaign_stats(ticker, trade_type):
+    """Counts how many times this ticker/type was alerted in the last 7 days."""
+    conn = init_db()
+    if not conn: return 0
+    try:
+        cutoff = (datetime.now() - timedelta(days=7)).isoformat()
+        res = conn.execute("SELECT COUNT(*) FROM alerts_sent WHERE ticker = ? AND type = ? AND timestamp > ?", (ticker, trade_type, cutoff)).fetchone()
+        conn.close()
+        return res[0] if res else 0
+    except: return 0
 
 def get_unconfirmed_alerts():
     conn = init_db()

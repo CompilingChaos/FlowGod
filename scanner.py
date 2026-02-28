@@ -3,7 +3,7 @@ import numpy as np
 import logging
 import math
 from scipy.stats import norm
-from historical_db import get_stats, get_ticker_baseline
+from historical_db import get_stats, get_ticker_baseline, get_weekly_campaign_stats
 from config import MIN_VOLUME, MIN_NOTIONAL, MIN_VOL_OI_RATIO, MIN_RELATIVE_VOL, MIN_STOCK_Z_SCORE
 from datetime import datetime
 
@@ -125,18 +125,21 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
     skew, contango, vol_bias = calculate_volatility_surface(df)
     baseline = get_ticker_baseline(ticker)
     trust_mult = baseline.get('trust_score', 1.0) if baseline else 1.0
+    avg_social = baseline.get('avg_social_vel', 0.0) if baseline else 0.0
+    hype_z = (social_vel / (avg_social + 0.1)) if avg_social > 0 else 0.0
     
+    # Tier-4 Weekly Campaign Stats
+    weekly_calls = get_weekly_campaign_stats(ticker, 'CALLS')
+    weekly_puts = get_weekly_campaign_stats(ticker, 'PUTS')
+
     # 1. Microstructure & Earnings Catalyst
     micro_label, micro_bonus = detect_microstructure_conviction(candle_df)
-    
-    earnings_bonus = 0
-    days_to_earnings = -1
+    earnings_bonus, days_to_earnings = 0, -1
     if earnings_date:
         try:
             e_date = datetime.strptime(earnings_date, '%Y-%m-%d').date()
             days_to_earnings = (e_date - datetime.now().date()).days
-            if 0 <= days_to_earnings <= 7:
-                earnings_bonus = 50 # Massive catalyst front-running bonus
+            if 0 <= days_to_earnings <= 7: earnings_bonus = 50 
         except: pass
 
     for idx, row in df.iterrows():
@@ -155,8 +158,6 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
     for _, row in df.iterrows():
         agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
         hvn_conv, hvn_label = calculate_hvn_conviction(candle_df, row['side'].upper(), spot)
-        
-        # PUT-INSIDER FILTER
         iv = row.get('impliedVolatility', 0)
         is_cheap_put = (row['side'] == 'puts') and (iv < 0.45) 
         is_skew_inverted = (row['side'] == 'puts') and (skew > 0.12)
@@ -171,6 +172,11 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
         if abs(spot - call_wall) / spot < 0.01: score -= 30
         if (vol_bias == "BULLISH" and row['side'] == 'calls') or (vol_bias == "BEARISH" and row['side'] == 'puts'): score += 40
         
+        # WEEKLY CAMPAIGN BONUS
+        campaign_count = weekly_calls if row['side'] == 'calls' else weekly_puts
+        if campaign_count >= 3: score += 40
+        if campaign_count >= 5: score += 60
+
         score = int(score * trust_mult * hvn_conv)
         if (row['volume'] > row['openInterest'] and row['volume'] > 500) or score >= 85:
             results.append({
@@ -184,8 +190,8 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
                 'aggression': f"{agg_label} | {micro_label} | {hvn_label}",
                 'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
                 'hype_z': round((social_vel / (baseline.get('avg_social_vel', 0)+0.1)) if baseline.get('avg_social_vel', 0) > 0 else 0, 1),
-                'earnings_dte': days_to_earnings,
-                'detection_reason': f"Score {score} | {hvn_label} | {'INSIDER PUT' if is_cheap_put else vol_bias} | {'EARNINGS' if earnings_bonus > 0 else ''}"
+                'earnings_dte': days_to_earnings, 'weekly_count': campaign_count,
+                'detection_reason': f"Score {score} | {hvn_label} | {'CAMPAIGN' if campaign_count >= 3 else vol_bias}"
             })
     return pd.DataFrame(results)
 
@@ -193,17 +199,19 @@ def generate_system_verdict(trade):
     t_type, spot = trade['type'], trade.get('underlying_price', 0)
     call_wall, put_wall = trade.get('call_wall', 0), trade.get('put_wall', 0)
     skew, agg, trend_p = trade.get('skew', 0), trade.get('aggression', ""), trade.get('trend_prob', 0.5)
-    e_dte = trade.get('earnings_dte', -1)
+    e_dte, w_count = trade.get('earnings_dte', -1), trade.get('weekly_count', 0)
     verdict, logic = "NEUTRAL", "Low conviction."
-    
     if "CALL" in t_type and "Aggressive" in agg:
-        if 0 <= e_dte <= 7: verdict, logic = "CALL (Long)", f"Earnings Front-Running ({e_dte} days to report). High Gamma setup."
-        elif trend_p > 0.8: verdict, logic = "CALL (Long)", f"Aggressive sweep + High Trend Probability ({trend_p*100}%)."
+        if w_count >= 3: verdict, logic = "CALL (Long)", f"Active Weekly Campaign ({w_count} alerts). Massive institutional scaling."
+        elif 0 <= e_dte <= 7: verdict, logic = "CALL (Long)", f"Earnings Front-Running ({e_dte}d). High Gamma setup."
+        elif trend_p > 0.8: verdict, logic = "CALL (Long)", f"Aggressive sweep + Trend Prob ({trend_p*100}%)."
         elif skew < 0: verdict, logic = "CALL (Long)", "Aggressive sweep + Bullish Skew."
+        elif spot > 0 and put_wall > 0 and (spot - put_wall) / spot < 0.02: verdict, logic = "CALL (Long)", "Support bounce at Put Wall."
         else: verdict, logic = "BUY (Stock)", "Bullish flow, conservative tech."
     elif "PUT" in t_type and "Aggressive" in agg:
-        if 0 <= e_dte <= 7: verdict, logic = "PUT (Short)", f"Earnings Front-Running ({e_dte} days to report). Bearish insider flow."
-        elif trend_p > 0.8: verdict, logic = "PUT (Short)", f"Aggressive sweep + High Trend Probability ({trend_p*100}%)."
+        if w_count >= 3: verdict, logic = "PUT (Short)", f"Active Weekly Campaign ({w_count} alerts). Bearish institutional scaling."
+        elif 0 <= e_dte <= 7: verdict, logic = "PUT (Short)", f"Earnings Front-Running ({e_dte}d). Bearish insider flow."
+        elif trend_p > 0.8: verdict, logic = "PUT (Short)", f"Aggressive sweep + Trend Prob ({trend_p*100}%)."
         else: verdict, logic = "PUT (Short)", "Bearish flow detected."
     elif "Dark Pool" in agg or "ICEBERG" in agg: verdict, logic = "BUY (Stock)", "Institutional absorption."
     return verdict, logic

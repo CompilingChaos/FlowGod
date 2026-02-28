@@ -24,6 +24,9 @@ TICKER: {trade['ticker']} {trade['type']} {trade['strike']} | Exp: {trade['exp']
 {macro_str}
 {rag_context}
 
+CAMPAIGN CONTEXT:
+Weekly Alerts for this Side: {trade.get('weekly_count', 0)} (3+ indicates aggressive scaling)
+
 TREND & PROBABILITY:
 Trend Probability: {trade.get('trend_prob', 0)*100:.0f}%
 Hype Z-Score: {trade.get('hype_z', 0)} (High = Retail FOMO, Low = Institutional Alpha)
@@ -40,7 +43,7 @@ Upcoming Earnings: {trade.get('earnings_date', 'N/A')} ({trade.get('earnings_dte
 
 AI INSTRUCTIONS:
 1. Validate SYSTEM VERDICT: {sys_verdict} ({sys_logic}).
-2. Factor in Upcoming Earnings: Is this 'Earnings Front-Running' or a standard hedge?
+2. Factor in Weekly Campaign: Is this institutional scaling?
 3. Respond ONLY with JSON.
 
 RESPONSE SCHEMA:
@@ -92,6 +95,9 @@ Gamma Flip: ${trade['flip']}
 
 🗓️ CATALYST:
 Earnings: {trade.get('earnings_date', 'N/A')} ({trade.get('earnings_dte', -1)} days)
+
+📢 CAMPAIGN:
+Weekly Alerts: {trade.get('weekly_count', 0)}x ({'Institutional Scaling' if trade.get('weekly_count', 0) >= 3 else 'Isolated Trade'})
 
 💬 SOCIAL SENTIMENT:
 Hype Z-Score: {trade.get('hype_z', 0)} ({'LOUD/FOMO' if trade.get('hype_z',0) > 2 else 'QUIET/ALPHA'})
