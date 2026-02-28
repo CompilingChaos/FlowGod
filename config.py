@@ -16,12 +16,11 @@ WATCHLIST_FILE = "watchlist.csv"
 DB_FILE = "database.db"
 ERROR_LOG = "errors.log"
 
-# Configure Logging: Only ERROR and above goes to the file.
+# Configure Logging: Output to console for GitHub Actions logs
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(ERROR_LOG),
         logging.StreamHandler()
     ]
 )
@@ -29,11 +28,7 @@ logging.basicConfig(
 # Silence secondary libraries
 logging.getLogger("yfinance").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.ERROR)
-
-# To fulfill the "silent if all goes well" requirement
-file_logger = logging.FileHandler(ERROR_LOG)
-file_logger.setLevel(logging.ERROR)
-logging.getLogger().addHandler(file_logger)
+logging.getLogger("requests").setLevel(logging.ERROR)
 
 # --- Thresholds ---
 MIN_VOLUME = 300
