@@ -5,19 +5,12 @@ FlowGod is a sophisticated options flow scanner and whale tracking tool, inspire
 ## Project Overview
 
 - **Unusual Activity Detection**: Scans for trades where Volume exceeds Open Interest by significant margins or where notional values indicate "whale" activity.
-- **Institutional Sweep Detection**: Analyzes execution price relative to the Bid/Ask spread to identify aggressive "Ask-hitting" sweeps (high conviction) vs. passive fills.
-- **Stealth Scanning Engine**: Uses a sequential, "Stock-First" approach to bypass Yahoo Finance rate limits. It performs a light check on stock volume before committing to heavy option chain fetches.
-- **Cloudflare Worker Bridge**: All Yahoo Finance requests are proxied through a custom Cloudflare Worker to bypass GitHub Actions IP blocks and ensure 100% uptime.
-- **Institutional Ticker Heat**: Integrates Massive.com (US) and Alpha Vantage (International) to calculate official 30-day stock volume baselines.
-- **Global Macro Awareness**: Fetches real-time SPY and VIX performance to contextualize whale trades within the broader market sentiment (Risk-On vs. Risk-Off).
-- **Hybrid Scoring System**: Uses a point-based scoring mechanism (0-200+) based on:
-    - **Institutional Aggression**: Heavy weight (+50 pts) for trades that cross the spread and hit the Ask (True Sweeps).
-    - **Ticker Heat**: High Stock Volume Z-Score (>2.0) adds significant weight.
-    - **Macro Divergence**: Extra weight if a whale bets against prevailing market fear (e.g., buying calls while VIX is spiking).
-    - **Volume & Notional**: High-value trades (>$500k) and high volume (>1000 contracts).
-    - **Opening Positions**: Instant flagging if Option Volume > Open Interest.
-- **AI-Powered Analysis**: Integrates with Google Gemini 3 Flash. The AI acts as an institutional analyst, identifying "Aggressive Accumulation," "Strategic Hedges," or "Speculative Lotteries."
-- **Automated Execution**: Optimized for GitHub Actions. Implements a "Once-per-Day" sync logic to keep historical baselines fresh while keeping trading-hour scans instant.
+- **Sweep Lie Detector (Vector 1)**: Analyzes 1-minute intraday stock price action and **VWAP divergence** to verify if an options whale was truly aggressive or just a passive block trade.
+- **GEX & Greeks Engine (Vector 2)**: Locally calculates Delta, Gamma, and Gamma Exposure (GEX) using the Black-Scholes model to identify potential "Gamma Squeezes" and dealer hedging pressure.
+- **Advanced Correlation Engine (Vector 3)**: Identifies institutional campaigns by clustering trades by Ticker and Sector. Uses ETF baselining to distinguish true sector divergence from broad market moves.
+- **Institutional AI Analyst (Vector 4)**: Integrates Gemini 3 Flash with a strict logic-driven rubric. Uses global macro context (SPY, VIX, DXY, TNX) to identify contrarian "Smart Money" bets.
+- **Stickiness Reputation System (Vector 5)**: Systematically verifies if yesterday's whales held their positions by tracking overnight Open Interest changes. Automatically adjusts "Ticker Trust Scores."
+- **Stealth Scanning Engine**: Uses a sequential, "Stock-First" approach via a **Cloudflare Worker Bridge** to bypass Yahoo Finance rate limits and GitHub IP blocks.
 
 ## Core Mandates
 
@@ -30,8 +23,8 @@ FlowGod is a sophisticated options flow scanner and whale tracking tool, inspire
 - **Live Data**: `yfinance` (Proxied via Cloudflare Worker Bridge)
 - **Historical Data**: Massive.com (US) & Alpha Vantage (International)
 - **Language**: Python 3.14+
-- **Database**: SQLite (bridged with CSV for GitHub persistence)
-- **AI Engine**: Google Gemini 3 Flash
+- **Math Engine**: `scipy` (Black-Scholes & Statistics)
+- **AI Engine**: Google Gemini 3 Flash (Structured JSON)
 - **Infrastructure**: GitHub Actions & Cloudflare Workers
 
 ## Key Thresholds (Configurable in `config.py`)

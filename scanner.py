@@ -17,23 +17,16 @@ def get_stock_heat(ticker, live_vol):
 def calculate_greeks(S, K, T, r, sigma, option_type='calls'):
     """
     Local Black-Scholes engine to derive Delta and Gamma.
-    S: Spot Price, K: Strike, T: Years to Exp, r: Risk-free rate, sigma: IV
     """
     if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
         return 0, 0
-    
     try:
         d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-        
-        # Delta
         if option_type == 'calls':
             delta = norm.cdf(d1)
         else:
             delta = norm.cdf(d1) - 1
-            
-        # Gamma
         gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
-        
         return round(delta, 3), round(gamma, 4)
     except:
         return 0, 0
@@ -50,17 +43,17 @@ def classify_aggression(last_price, bid, ask):
             return "Leaning Bullish (Above Mid)", 25
     return "Neutral (Mid-Point)", 10
 
-def score_unusual(df, ticker, stock_z, sector="Unknown"):
+def score_unusual(df, ticker, stock_z, sector="Unknown", intraday_agg=("Unknown", 0)):
     results = []
     if df.empty: return pd.DataFrame()
 
     baseline = get_ticker_baseline(ticker)
     trust_multiplier = baseline.get('trust_score', 1.0) if baseline else 1.0
+    agg_label_intraday, agg_bonus_intraday = intraday_agg
 
     for _, row in df.iterrows():
         contract = row['contractSymbol']
         stats = get_stats(ticker, contract)
-        
         avg_vol = stats['avg_vol']
         std_dev = stats['std_dev']
         
@@ -68,18 +61,17 @@ def score_unusual(df, ticker, stock_z, sector="Unknown"):
         rel_vol = row['volume'] / (avg_vol + 1)
         z_score = (row['volume'] - avg_vol) / (std_dev + 1) if std_dev > 0 else 0
         
-        # 2. Local Greeks (Black-Scholes)
+        # 2. Local Greeks
         T = max(0.001, row['dte']) / 365.0
-        r = 0.045 # Current Risk Free Rate approximation
+        r = 0.045 
         iv = row.get('impliedVolatility', 0)
         delta, gamma = calculate_greeks(row['underlying_price'], row['strike'], T, r, iv, row['side'])
-        
-        # GEX Approximation: Gamma * OI * 100 * Spot
-        # Measures how much dealers must hedge per 1% move
         gex = gamma * row['openInterest'] * 100 * row['underlying_price']
         
-        # 3. Aggression
+        # 3. Combined Aggression
         agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
+        final_agg_label = f"{agg_label} | {agg_label_intraday}"
+        final_agg_bonus = agg_bonus + agg_bonus_intraday
         
         score = 0
         if row['volume'] > 1000: score += 20
@@ -88,14 +80,13 @@ def score_unusual(df, ticker, stock_z, sector="Unknown"):
         if rel_vol > 8: score += 30
         if z_score > 3: score += 50
         
-        # GREEKS BONUS
-        if abs(delta) > 0.4 and abs(delta) < 0.6: score += 20 # At-the-money conviction
-        if gamma > 0.05: score += 30 # High Gamma / Potential Squeeze
-        
-        score += agg_bonus
+        # Bonuses
+        if abs(delta) > 0.4 and abs(delta) < 0.6: score += 20 
+        if gamma > 0.05: score += 30 
+        score += final_agg_bonus
         if stock_z > MIN_STOCK_Z_SCORE: score += 40
 
-        # FINAL SCORING WITH TRUST MULTIPLIER
+        # FINAL SCORING
         score = int(score * trust_multiplier)
 
         # 4. Filtering
@@ -127,7 +118,7 @@ def score_unusual(df, ticker, stock_z, sector="Unknown"):
                 'gex': int(gex),
                 'iv': round(iv, 2),
                 'score': int(score),
-                'aggression': agg_label,
+                'aggression': final_agg_label,
                 'sector': sector,
                 'bid': row['bid'],
                 'ask': row['ask']
@@ -138,7 +129,6 @@ def score_unusual(df, ticker, stock_z, sector="Unknown"):
 def process_results(all_results, macro_context, sector_performance):
     """Groups results into high-conviction Sector and Ticker clusters."""
     if not all_results: return []
-    
     df = pd.DataFrame(all_results)
     final_alerts = []
     
@@ -169,7 +159,6 @@ def process_results(all_results, macro_context, sector_performance):
             total_notional = t_group['notional'].sum()
             total_vol = t_group['volume'].sum()
             total_gex = t_group['gex'].sum()
-            
             best_trade['type'] = "📦 TICKER CLUSTER 📦"
             best_trade['aggression'] = f"Whale scaling: {len(t_group)} strikes/expirations targeted."
             best_trade['notional'] = total_notional

@@ -78,6 +78,43 @@ def get_sector_etf_performance():
             performance[sector] = 0
     return performance
 
+def get_intraday_aggression(ticker):
+    """
+    Analyzes 1m price action vs VWAP to verify institutional 'Sweep' conviction.
+    """
+    try:
+        # Fetch 1m intraday data for the current day
+        df = yf.download(ticker, period="1d", interval="1m", progress=False)
+        if df.empty or len(df) < 10:
+            return "Unknown (Low Liquidity)", 0
+
+        # Calculate Intraday VWAP
+        df['Typical_Price'] = (df['High'] + df['Low'] + df['Close']) / 3
+        df['Cumulative_Vol'] = df['Volume'].cumsum()
+        df['Cumulative_Vol_Price'] = (df['Typical_Price'] * df['Volume']).cumsum()
+        df['VWAP'] = df['Cumulative_Vol_Price'] / df['Cumulative_Vol']
+
+        # Analyze the last 5 minutes (proxy for the trade execution window)
+        recent = df.tail(5)
+        # Price velocity (Change over 5 mins)
+        price_change = (recent['Close'].iloc[-1] - recent['Open'].iloc[0]) / recent['Open'].iloc[0]
+        # VWAP Divergence (Is price pushing significantly away from the mean?)
+        vwap_div = (recent['Close'].iloc[-1] - recent['VWAP'].iloc[-1]) / recent['VWAP'].iloc[-1]
+
+        # BULLISH SWEEP: Stock price surging and ripping above VWAP
+        if price_change > 0.0015 and vwap_div > 0.001:
+            return "Institutional Sweep (Uptick Aggression)", 40
+        
+        # BEARISH SWEEP: Stock price dumping and breaking below VWAP
+        if price_change < -0.0015 and vwap_div < -0.001:
+            return "Institutional Sweep (Downside Aggression)", 40
+
+        # If price is flat or hugging VWAP, it was likely a passive block
+        return "Passive Block / Hedging", 5
+    except Exception as e:
+        logging.error(f"Intraday aggression check failed for {ticker}: {e}")
+        return "Unknown", 0
+
 def get_stock_info(ticker):
     """Fetches just the stock price and volume (Fast/Light)."""
     try:
