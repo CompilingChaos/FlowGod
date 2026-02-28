@@ -1,9 +1,18 @@
 import pandas as pd
-from historical_db import get_stats
-from config import MIN_VOLUME, MIN_NOTIONAL, MIN_VOL_OI_RATIO, MIN_RELATIVE_VOL
+from historical_db import get_stats, get_ticker_baseline
+from config import MIN_VOLUME, MIN_NOTIONAL, MIN_VOL_OI_RATIO, MIN_RELATIVE_VOL, MIN_STOCK_Z_SCORE
 
 def score_unusual(df, ticker):
     results = []
+    
+    # Calculate Stock-Level Volume Heat
+    baseline = get_ticker_baseline(ticker)
+    stock_z = 0
+    if baseline and not df.empty:
+        stock_vol = df.iloc[0]['underlying_vol']
+        if baseline['std_dev'] > 0:
+            stock_z = (stock_vol - baseline['avg_vol']) / baseline['std_dev']
+
     for _, row in df.iterrows():
         contract = row['contractSymbol']
         stats = get_stats(ticker, contract)
@@ -11,7 +20,7 @@ def score_unusual(df, ticker):
         avg_vol = stats['avg_vol']
         std_dev = stats['std_dev']
         
-        # 1. Calculate Relative Volume and Z-Score
+        # 1. Calculate Relative Volume and Z-Score (Options)
         rel_vol = row['volume'] / (avg_vol + 1)
         z_score = (row['volume'] - avg_vol) / (std_dev + 1) if std_dev > 0 else 0
         
@@ -29,6 +38,10 @@ def score_unusual(df, ticker):
         if z_score > 5: score += 30
         if row['dte'] < 45 and row['moneyness'] < 12: score += 20
         if iv > 0.8: score += 20 
+        
+        # STOCK HEAT MULTIPLIER
+        if stock_z > MIN_STOCK_Z_SCORE: score += 40
+        if stock_z > 5: score += 60
 
         # 3. Hybrid Filtering Logic
         meets_mins = (
@@ -38,9 +51,11 @@ def score_unusual(df, ticker):
             rel_vol >= MIN_RELATIVE_VOL
         )
         
-        # HIGH-SCORE BYPASS: Even if it misses one min threshold, 
-        # if the score is very high (>= 85), we still flag it for AI review.
-        is_whale = meets_mins or score >= 85
+        # Opening Position Bypass: Vol > OI
+        is_opening = row['volume'] > row['openInterest'] and row['volume'] > 500
+
+        # 4. Final Flagging
+        is_whale = meets_mins or score >= 85 or is_opening
 
         if is_whale:
             results.append({
@@ -56,6 +71,7 @@ def score_unusual(df, ticker):
                 'vol_oi': round(row['vol_oi_ratio'], 1) if not pd.isna(row['vol_oi_ratio']) else 0,
                 'rel_vol': round(rel_vol, 1) if not pd.isna(rel_vol) else 0,
                 'z_score': round(z_score, 1),
+                'stock_z': round(stock_z, 1),
                 'iv': round(iv, 2),
                 'score': int(score),
                 'bullish': row['side'] == 'calls'

@@ -11,15 +11,41 @@ HISTORICAL_CSV = "historical_data.csv"
 def init_db():
     try:
         conn = sqlite3.connect(DB_FILE)
+        # Options History
         conn.execute('''CREATE TABLE IF NOT EXISTS hist_vol_oi 
                      (ticker TEXT, contract TEXT, date TEXT, volume INTEGER, oi INTEGER)''')
+        # Alert Tracking
         conn.execute('''CREATE TABLE IF NOT EXISTS alerts_sent 
                      (contract TEXT PRIMARY KEY, timestamp TEXT)''')
+        # Stock Baselines (Massive.com)
+        conn.execute('''CREATE TABLE IF NOT EXISTS ticker_stats 
+                     (ticker TEXT PRIMARY KEY, avg_vol REAL, std_dev REAL, last_updated TEXT)''')
         conn.commit()
         return conn
     except Exception as e:
         logging.error(f"DB Init Error: {e}")
         return None
+
+def update_ticker_baseline(ticker, avg_vol, std_dev):
+    conn = init_db()
+    if not conn: return
+    try:
+        conn.execute("INSERT OR REPLACE INTO ticker_stats VALUES (?, ?, ?, ?)",
+                     (ticker, avg_vol, std_dev, datetime.now().isoformat()))
+        conn.commit()
+    finally:
+        conn.close()
+
+def get_ticker_baseline(ticker):
+    conn = init_db()
+    if not conn: return None
+    try:
+        res = conn.execute("SELECT avg_vol, std_dev FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
+        if res:
+            return {'avg_vol': res[0], 'std_dev': res[1]}
+        return None
+    finally:
+        conn.close()
 
 def load_from_csv():
     if os.path.exists(HISTORICAL_CSV):

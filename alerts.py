@@ -18,8 +18,9 @@ def get_ai_summary(trade, ticker_context=""):
         prompt = f"""As a whale trade analyst, analyze this option trade:
 {trade['ticker']} {trade['type']} {trade['strike']} exp {trade['exp']} 
 Volume: {trade['volume']} (vs normal {trade['rel_vol']}x)
+Stock Heat (Z-Score): {trade['stock_z']}
 Notional Value: ${trade['notional']:,}
-Z-Score: {trade['z_score']}
+Option Z-Score: {trade['z_score']}
 IV: {trade['iv']*100:.1f}%
 
 HISTORICAL CONTEXT (Last 2 Days):
@@ -27,8 +28,9 @@ HISTORICAL CONTEXT (Last 2 Days):
 
 CRITICAL INSTRUCTIONS:
 1. Identify 'Urgency Shifts': Look for a sudden burst of activity compared to the history.
-2. If this trade is routine, a small lottery play, or not a true shift in sentiment, reply ONLY with "NOT_UNUSUAL".
-3. If it represents high conviction or a significant catalyst-driven sweep, provide a ONE SHORT sentence analysis.
+2. High Stock Heat (>2.0) indicates high ticker conviction.
+3. If this trade is routine, a small lottery play, or not a true shift in sentiment, reply ONLY with "NOT_UNUSUAL".
+4. If it represents high conviction or a significant catalyst-driven sweep, provide a ONE SHORT sentence analysis.
 Focus on: 'Lottery play', 'Hedge', or 'Deep Conviction'."""
 
         response = model.generate_content(prompt)
@@ -55,6 +57,7 @@ async def send_alert(trade, ticker_context=""):
 {trade['ticker']} {trade['type']} {trade['strike']} {trade['exp']}
 Vol: {trade['volume']} • Notional: ${trade['notional']:,}
 Score: {trade['score']} • RelVol: {trade['rel_vol']}x • Z: {trade['z_score']}
+Stock Heat Z: {trade['stock_z']}
 IV: {trade['iv']*100:.1f}% • Premium: ${trade['premium']}
 
 📊 CONTEXT (Last 2 Days):

@@ -23,13 +23,15 @@ def get_options_data(ticker):
     try:
         # Prefer fast_info for performance
         price = stock.fast_info.get('lastPrice', 0)
+        stock_vol = stock.fast_info.get('last_volume', 0)
     except:
         price = 0
+        stock_vol = 0
     
     all_data = []
     options = list(stock.options)
     if not options:
-        return pd.DataFrame(), price
+        return pd.DataFrame(), price, stock_vol
 
     for exp in options[:10]:   # next 10 expirations
         chain = stock.option_chain(exp)
@@ -43,8 +45,9 @@ def get_options_data(ticker):
             side['notional'] = side['volume'] * side['lastPrice'].fillna(0) * 100
             side['vol_oi_ratio'] = side['volume'] / (side['openInterest'].replace(0, 1) + 1)
             side['underlying_price'] = price
+            side['underlying_vol'] = stock_vol
             side['moneyness'] = abs(side['strike'] - price) / price * 100 if price > 0 else 0
             all_data.append(side)
     
     df = pd.concat(all_data) if all_data else pd.DataFrame()
-    return df, price
+    return df, price, stock_vol

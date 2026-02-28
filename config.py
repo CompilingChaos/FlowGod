@@ -8,6 +8,7 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+MASSIVE_API_KEY = os.getenv("MASSIVE_API_KEY")
 
 WATCHLIST_FILE = "watchlist.csv"
 DB_FILE = "database.db"
@@ -32,10 +33,14 @@ file_logger = logging.FileHandler(ERROR_LOG)
 file_logger.setLevel(logging.ERROR)
 logging.getLogger().addHandler(file_logger)
 
-# --- Relaxed & Hybrid Thresholds ---
+# --- Thresholds ---
 MIN_VOLUME = 300
 MIN_NOTIONAL = 15000
 MIN_VOL_OI_RATIO = 6.0
 MIN_RELATIVE_VOL = 4.0
 MAX_TICKERS = 150 
-# ------------------------------------
+
+# --- Stock-Level Baselines (Massive.com) ---
+MIN_STOCK_Z_SCORE = 2.0  # Alert if volume is > 2 std devs from mean
+BASELINE_DAYS = 30
+# ------------------
