@@ -11,6 +11,8 @@ FlowGod is a sophisticated institutional-grade options flow scanner and market m
 - **Dark Pool Proxy Detection**: Infers hidden institutional absorption by monitoring intraday **Volume/Price Compression** (Dark Z-Score).
 - **Sweep Lie Detector**: Analyzes 1-minute **VWAP divergence** and **Tick-Relative Volume (TRV)** to verify institutional conviction.
 - **Stickiness Reputation System**: Verifies if whales held positions overnight by tracking opening OI changes (Vector 5 logic).
+- **Serverless Trade Verification**: Allows users to save high-conviction trades via Telegram inline buttons. A zero-server GitHub Action "harvests" these clicks, logs them, and automatically runs a daily P/L backtester.
+- **Stealth Scanning Engine**: Uses a sequential, "Stock-First" approach via a **Cloudflare Worker Bridge** to bypass Yahoo Finance rate limits and GitHub IP blocks.
 
 ## Core Mandates
 
