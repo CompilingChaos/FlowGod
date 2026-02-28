@@ -5,13 +5,14 @@ import math
 from scipy.stats import norm
 from historical_db import get_stats, get_ticker_baseline
 from config import MIN_VOLUME, MIN_NOTIONAL, MIN_VOL_OI_RATIO, MIN_RELATIVE_VOL, MIN_STOCK_Z_SCORE
+from datetime import datetime
 
 def get_stock_heat(ticker, live_vol):
     baseline = get_ticker_baseline(ticker)
     if baseline and baseline['std_dev'] > 0:
         z_score = (live_vol - baseline['avg_vol']) / baseline['std_dev']
-        return z_score, baseline.get('sector', 'Unknown')
-    return 0, "Unknown"
+        return z_score, baseline.get('sector', 'Unknown'), baseline.get('earnings_date')
+    return 0, "Unknown", None
 
 def calculate_color(S, K, T, r, sigma, option_type='calls'):
     if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0.0
@@ -90,48 +91,53 @@ def predict_trend_probability(df_1m, call_wall, put_wall):
         return round(min(0.99, norm.cdf(z) * wall_mult), 2)
     except: return 0.5
 
-def detect_microstructure_conviction(df_1m):
-    """
-    Tier-3: Multi-Layer Microstructure Engine.
-    Identifies Icebergs, Sweeps, and Absorption without external tape.
-    """
-    if df_1m is None or len(df_1m) < 30: return "Standard", 0
+def detect_icebergs(df_1m):
+    if df_1m is None or len(df_1m) < 30: return False
     try:
-        # 1. Iceberg Detection (Effort vs Result)
         tr = (df_1m['High'] - df_1m['Low']).replace(0, 0.01)
         df_1m['vol_density'] = df_1m['Volume'] / tr
         roll_mean = df_1m['vol_density'].rolling(window=30).mean()
         roll_std = df_1m['vol_density'].rolling(window=30).std()
         df_1m['iceberg_z'] = (df_1m['vol_density'] - roll_mean) / (roll_std + 0.1)
         vol_90 = df_1m['Volume'].quantile(0.90)
-        
+        latest = df_1m.iloc[-5:] 
+        return ((latest['iceberg_z'] > 3.0) & (latest['Volume'] > vol_90)).any()
+    except: return False
+
+def detect_microstructure_conviction(df_1m):
+    if df_1m is None or len(df_1m) < 30: return "Standard", 0
+    try:
+        if detect_icebergs(df_1m): return "Institutional ICEBERG", 65
         last_c = df_1m.iloc[-1]
-        is_iceberg = (last_c['iceberg_z'] > 3.0) and (last_c['Volume'] > vol_90)
-        
-        # 2. Sweep Aggression (Candle Shape + VWAP)
         buyer_agg = (last_c['Close'] - last_c['Low']) / (last_c['High'] - last_c['Low'] + 0.01)
         vwap = df_1m['VWAP'].iloc[-1] if 'VWAP' in df_1m.columns else last_c['Close']
-        is_sweep = buyer_agg > 0.8 and last_c['Close'] > vwap
-        
-        if is_iceberg and is_sweep: return "🚨 INSTITUTIONAL SWEEP (Iceberg Broken) 🚨", 80
-        if is_iceberg: return "🧊 ICEBERG ABSORPTION (Dark Proxy) 🧊", 65
-        if is_sweep: return "🚀 AGGRESSIVE SWEEP (Lifting Ask) 🚀", 50
-        return "Passive/Neutral Flow", 10
-    except:
-        return "Unknown", 0
+        if buyer_agg > 0.8 and last_c['Close'] > vwap: return "🚀 AGGRESSIVE SWEEP 🚀", 50
+        return "Passive Flow", 10
+    except: return "Unknown", 0
 
 def classify_aggression(last_price, bid, ask):
     if last_price >= ask and ask > 0: return "Aggressive (Ask)", 50
     if last_price <= bid and bid > 0: return "Passive (Bid)", 0
     return "Neutral (Mid)", 10
 
-def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_vel=0.0):
+def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_vel=0.0, earnings_date=None):
     if df.empty: return pd.DataFrame()
     skew, contango, vol_bias = calculate_volatility_surface(df)
     baseline = get_ticker_baseline(ticker)
     trust_mult = baseline.get('trust_score', 1.0) if baseline else 1.0
-    avg_social = baseline.get('avg_social_vel', 0.0) if baseline else 0.0
-    hype_z = (social_vel / (avg_social + 0.1)) if avg_social > 0 else 0.0
+    
+    # 1. Microstructure & Earnings Catalyst
+    micro_label, micro_bonus = detect_microstructure_conviction(candle_df)
+    
+    earnings_bonus = 0
+    days_to_earnings = -1
+    if earnings_date:
+        try:
+            e_date = datetime.strptime(earnings_date, '%Y-%m-%d').date()
+            days_to_earnings = (e_date - datetime.now().date()).days
+            if 0 <= days_to_earnings <= 7:
+                earnings_bonus = 50 # Massive catalyst front-running bonus
+        except: pass
 
     for idx, row in df.iterrows():
         T = max(0.001, row['dte']) / 365.0
@@ -145,35 +151,23 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
     spot = df.iloc[0]['underlying_price']
     trend_p = predict_trend_probability(candle_df, call_wall, put_wall)
     
-    trv_label, trv_bonus = "Standard Flow", 10
-    if candle_df is not None:
-        if detect_icebergs(candle_df): trv_label, trv_bonus = "Institutional ICEBERG", 65
-        else:
-            last_c = candle_df.iloc[-1]
-            buyer_agg = (last_c['Close'] - last_c['Low']) / (last_c['High'] - last_c['Low'] + 0.01)
-            vwap = candle_df['VWAP'].iloc[-1] if 'VWAP' in candle_df.columns else last_c['Close']
-            if buyer_agg > 0.8 and last_c['Close'] > vwap: trv_label, trv_bonus = "Sweep (TRV Max)", 50
-
     results = []
     for _, row in df.iterrows():
         agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
         hvn_conv, hvn_label = calculate_hvn_conviction(candle_df, row['side'].upper(), spot)
         
-        # PUT-INSIDER FILTER: Hedgers buy Puts when IV is high. Insiders buy when IV is LOW (cheap).
+        # PUT-INSIDER FILTER
         iv = row.get('impliedVolatility', 0)
         is_cheap_put = (row['side'] == 'puts') and (iv < 0.45) 
-        is_skew_inverted = (row['side'] == 'puts') and (skew > 0.12) # Bearish bias confirmed by surface
+        is_skew_inverted = (row['side'] == 'puts') and (skew > 0.12)
         
         score = 0
         if row['volume'] > 1000: score += 20
         if row['notional'] > 500000: score += 40
-        score += agg_bonus + trv_bonus
+        score += agg_bonus + micro_bonus + earnings_bonus
         if trend_p > 0.85: score += 30 
-        
-        # PUT SPECIFIC BONUSES
-        if is_cheap_put: score += 45 # Institutional characteristic: buying protection while it's cheap
-        if is_skew_inverted: score += 55 # Severe bearish institutional divergence
-        
+        if is_cheap_put: score += 45 
+        if is_skew_inverted: score += 55 
         if abs(spot - call_wall) / spot < 0.01: score -= 30
         if (vol_bias == "BULLISH" and row['side'] == 'calls') or (vol_bias == "BEARISH" and row['side'] == 'puts'): score += 40
         
@@ -187,9 +181,11 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
                 'delta': row['delta'], 'gamma': row['gamma'], 'vanna': row['vanna'], 'charm': row['charm'],
                 'gex': int(row['gex']), 'decay_vel': total_decay_vel, 'call_wall': call_wall, 'put_wall': put_wall, 'flip': flip,
                 'skew': skew, 'bias': vol_bias, 'score': score, 'trend_prob': trend_p,
-                'aggression': f"{agg_label} | {trv_label} | {hvn_label}",
+                'aggression': f"{agg_label} | {micro_label} | {hvn_label}",
                 'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
-                'hype_z': round(hype_z, 1), 'detection_reason': f"Score {score} | {hvn_label} | {'INSIDER PUT' if is_cheap_put else vol_bias}"
+                'hype_z': round((social_vel / (baseline.get('avg_social_vel', 0)+0.1)) if baseline.get('avg_social_vel', 0) > 0 else 0, 1),
+                'earnings_dte': days_to_earnings,
+                'detection_reason': f"Score {score} | {hvn_label} | {'INSIDER PUT' if is_cheap_put else vol_bias} | {'EARNINGS' if earnings_bonus > 0 else ''}"
             })
     return pd.DataFrame(results)
 
@@ -197,16 +193,17 @@ def generate_system_verdict(trade):
     t_type, spot = trade['type'], trade.get('underlying_price', 0)
     call_wall, put_wall = trade.get('call_wall', 0), trade.get('put_wall', 0)
     skew, agg, trend_p = trade.get('skew', 0), trade.get('aggression', ""), trade.get('trend_prob', 0.5)
+    e_dte = trade.get('earnings_dte', -1)
     verdict, logic = "NEUTRAL", "Low conviction."
+    
     if "CALL" in t_type and "Aggressive" in agg:
-        if trend_p > 0.8: verdict, logic = "CALL (Long)", f"Aggressive sweep + High Trend Probability ({trend_p*100}%)."
+        if 0 <= e_dte <= 7: verdict, logic = "CALL (Long)", f"Earnings Front-Running ({e_dte} days to report). High Gamma setup."
+        elif trend_p > 0.8: verdict, logic = "CALL (Long)", f"Aggressive sweep + High Trend Probability ({trend_p*100}%)."
         elif skew < 0: verdict, logic = "CALL (Long)", "Aggressive sweep + Bullish Skew."
-        elif spot > 0 and put_wall > 0 and (spot - put_wall) / spot < 0.02: verdict, logic = "CALL (Long)", "Support bounce at Put Wall."
         else: verdict, logic = "BUY (Stock)", "Bullish flow, conservative tech."
     elif "PUT" in t_type and "Aggressive" in agg:
-        if trend_p > 0.8: verdict, logic = "PUT (Short)", f"Aggressive sweep + High Trend Probability ({trend_p*100}%)."
-        elif skew > 0.05: verdict, logic = "PUT (Short)", "Aggressive sweep + Bearish Skew."
-        elif spot > 0 and call_wall > 0 and (call_wall - spot) / spot < 0.02: verdict, logic = "PUT (Short)", "Resistance rejection at Call Wall."
+        if 0 <= e_dte <= 7: verdict, logic = "PUT (Short)", f"Earnings Front-Running ({e_dte} days to report). Bearish insider flow."
+        elif trend_p > 0.8: verdict, logic = "PUT (Short)", f"Aggressive sweep + High Trend Probability ({trend_p*100}%)."
         else: verdict, logic = "PUT (Short)", "Bearish flow detected."
     elif "Dark Pool" in agg or "ICEBERG" in agg: verdict, logic = "BUY (Stock)", "Institutional absorption."
     return verdict, logic

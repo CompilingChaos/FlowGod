@@ -25,7 +25,7 @@ TICKER: {trade['ticker']} {trade['type']} {trade['strike']} | Exp: {trade['exp']
 {rag_context}
 
 TREND & PROBABILITY:
-Trend Probability: {trade.get('trend_prob', 0)*100:.0f}% (Calculated via VWAP/Wall divergence)
+Trend Probability: {trade.get('trend_prob', 0)*100:.0f}%
 Hype Z-Score: {trade.get('hype_z', 0)} (High = Retail FOMO, Low = Institutional Alpha)
 
 GREEKS & DECAY:
@@ -36,11 +36,12 @@ GEX Pressure: ${trade['gex']:,} | Gamma Flip Level: ${trade['flip']}
 TECHNICALS:
 Skew: {trade['skew']} ({trade['bias']} bias)
 Walls: Call Wall: ${trade['call_wall']} | Put Wall: ${trade['put_wall']}
+Upcoming Earnings: {trade.get('earnings_date', 'N/A')} ({trade.get('earnings_dte', -1)} days away)
 
 AI INSTRUCTIONS:
 1. Validate SYSTEM VERDICT: {sys_verdict} ({sys_logic}).
-2. Use 'Trend Probability' to determine if an entry is needed NOW or if we are still in absorption.
-3. Suggest Trade Republic compatible action (BUY, CALL, PUT). Respond ONLY with JSON.
+2. Factor in Upcoming Earnings: Is this 'Earnings Front-Running' or a standard hedge?
+3. Respond ONLY with JSON.
 
 RESPONSE SCHEMA:
 {{
@@ -88,6 +89,9 @@ GEX Pressure: ${trade['gex']:,}
 Hedge Decay (Color): {trade.get('decay_vel', 0)}
 Call Wall: ${trade['call_wall']} | Put Wall: ${trade['put_wall']}
 Gamma Flip: ${trade['flip']}
+
+🗓️ CATALYST:
+Earnings: {trade.get('earnings_date', 'N/A')} ({trade.get('earnings_dte', -1)} days)
 
 💬 SOCIAL SENTIMENT:
 Hype Z-Score: {trade.get('hype_z', 0)} ({'LOUD/FOMO' if trade.get('hype_z',0) > 2 else 'QUIET/ALPHA'})

@@ -25,23 +25,27 @@ def init_db():
         # Stock Baselines
         conn.execute('''CREATE TABLE IF NOT EXISTS ticker_stats 
                      (ticker TEXT PRIMARY KEY, avg_vol REAL, std_dev REAL, sector TEXT, 
-                      trust_score REAL DEFAULT 1.0, last_updated TEXT)''')
+                      trust_score REAL DEFAULT 1.0, avg_social_vel REAL DEFAULT 0.0,
+                      earnings_date TEXT, last_updated TEXT)''')
         conn.commit()
         return conn
     except Exception as e:
         logging.error(f"DB Init Error: {e}")
         return None
 
-def update_ticker_baseline(ticker, avg_vol, std_dev, sector="Unknown"):
+def update_ticker_baseline(ticker, avg_vol, std_dev, sector="Unknown", social_vel=0.0, earnings_date=None):
     conn = init_db()
     if not conn: return
     try:
-        res = conn.execute("SELECT trust_score FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
+        res = conn.execute("SELECT trust_score, avg_social_vel, earnings_date FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
         current_trust = res[0] if res else 1.0
+        new_social = social_vel if social_vel > 0 else (res[1] if res else 0.0)
+        final_earnings = earnings_date if earnings_date else (res[2] if res else None)
+        
         conn.execute("""INSERT OR REPLACE INTO ticker_stats 
-                     (ticker, avg_vol, std_dev, sector, trust_score, last_updated) 
-                     VALUES (?, ?, ?, ?, ?, ?)""",
-                     (ticker, avg_vol, std_dev, sector, current_trust, datetime.now().isoformat()))
+                     (ticker, avg_vol, std_dev, sector, trust_score, avg_social_vel, earnings_date, last_updated) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                     (ticker, avg_vol, std_dev, sector, current_trust, new_social, final_earnings, datetime.now().isoformat()))
         conn.commit()
     finally:
         conn.close()
@@ -50,9 +54,9 @@ def get_ticker_baseline(ticker):
     conn = init_db()
     if not conn: return None
     try:
-        res = conn.execute("SELECT avg_vol, std_dev, sector, trust_score FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
+        res = conn.execute("SELECT avg_vol, std_dev, sector, trust_score, avg_social_vel, earnings_date FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
         if res:
-            return {'avg_vol': res[0], 'std_dev': res[1], 'sector': res[2], 'trust_score': res[3]}
+            return {'avg_vol': res[0], 'std_dev': res[1], 'sector': res[2], 'trust_score': res[3], 'avg_social_vel': res[4], 'earnings_date': res[5]}
         return None
     finally:
         conn.close()
@@ -81,7 +85,6 @@ def mark_alert_sent(contract, ticker="", trade_type="", vol=0, oi=0, price=0):
         conn.close()
 
 def get_rag_context(ticker, trade_type):
-    """Retrieves historical win-rate for similar trades on this ticker."""
     conn = init_db()
     if not conn: return "No historical precedent."
     try:
@@ -93,16 +96,11 @@ def get_rag_context(ticker, trade_type):
         """
         df = pd.read_sql_query(query, conn, params=(ticker, trade_type))
         conn.close()
-        if df.empty:
-            return "First time seeing high-conviction flow for this ticker/type."
-        if trade_type == 'CALLS':
-            win_rate = (df['outcome_3d'] > 0).mean()
-        else:
-            win_rate = (df['outcome_3d'] < 0).mean()
+        if df.empty: return "First time seeing high-conviction flow for this ticker/type."
+        win_rate = (df['outcome_3d'] > 0).mean() if trade_type == 'CALLS' else (df['outcome_3d'] < 0).mean()
         avg_move = df['outcome_3d'].mean() * 100
         return f"RAG PRECEDENT: Last 10 similar {trade_type} on {ticker} had a {win_rate:.0%} win rate. Avg 3-day move: {avg_move:.1f}%."
-    except:
-        return "Memory system unavailable."
+    except: return "Memory system unavailable."
 
 def get_unconfirmed_alerts():
     conn = init_db()
@@ -173,8 +171,7 @@ def get_ticker_context(ticker, days=2):
         for _, row in df.iterrows():
             context_str += f"- {row['date']}: Vol {row['total_vol']:,}, OI {row['total_oi']:,}\n"
         return context_str
-    except Exception as e:
-        return "Context unavailable."
+    except Exception as e: return "Context unavailable."
 
 def update_historical(ticker, chain_df):
     conn = init_db()
@@ -206,8 +203,7 @@ def get_stats(ticker, contract, days=30):
         row = df.iloc[0]
         std_dev = math.sqrt(max(0, row['variance']))
         return {'avg_vol': row['avg_vol'], 'avg_oi': row['avg_oi'], 'std_dev': std_dev}
-    except Exception as e:
-        return {'avg_vol': 0, 'avg_oi': 0, 'std_dev': 0}
+    except Exception as e: return {'avg_vol': 0, 'avg_oi': 0, 'std_dev': 0}
 
 def is_alert_sent(contract):
     conn = init_db()
