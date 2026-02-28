@@ -6,7 +6,7 @@ from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 import google.generativeai as genai
 
 # Google AI Studio (Gemini) Setup
-def get_ai_summary(trade, ticker_context=""):
+def get_ai_summary(trade, ticker_context="", macro_context=None):
     gemini_key = os.getenv("GEMINI_API_KEY")
     if not gemini_key:
         return ""
@@ -15,7 +15,13 @@ def get_ai_summary(trade, ticker_context=""):
         genai.configure(api_key=gemini_key)
         model = genai.GenerativeModel("gemini-3-flash")
         
-        prompt = f"""As a whale trade analyst, analyze this option trade:
+        # Format Macro Context
+        m = macro_context or {'spy_pc': 0, 'vix_pc': 0, 'sentiment': "Neutral"}
+        macro_str = f"Market Sentiment: {m['sentiment']} (SPY: {m['spy_pc']}%, VIX: {m['vix_pc']}% change)"
+
+        prompt = f"""As an institutional options flow expert, analyze this high-conviction trade:
+
+TICKER DATA:
 {trade['ticker']} {trade['type']} {trade['strike']} exp {trade['exp']} 
 Volume: {trade['volume']} (vs normal {trade['rel_vol']}x)
 Stock Heat (Z-Score): {trade['stock_z']}
@@ -23,15 +29,18 @@ Notional Value: ${trade['notional']:,}
 Option Z-Score: {trade['z_score']}
 IV: {trade['iv']*100:.1f}%
 
-HISTORICAL CONTEXT (Last 2 Days):
+MACRO ENVIRONMENT:
+{macro_str}
+
+HISTORICAL TICKER CONTEXT (Last 2 Days):
 {ticker_context}
 
-CRITICAL INSTRUCTIONS:
-1. Identify 'Urgency Shifts': Look for a sudden burst of activity compared to the history.
-2. High Stock Heat (>2.0) indicates high ticker conviction.
-3. If this trade is routine, a small lottery play, or not a true shift in sentiment, reply ONLY with "NOT_UNUSUAL".
-4. If it represents high conviction or a significant catalyst-driven sweep, provide a ONE SHORT sentence analysis.
-Focus on: 'Lottery play', 'Hedge', or 'Deep Conviction'."""
+ANALYST INSTRUCTIONS:
+1. Determine if this is 'Aggressive Accumulation', a 'Strategic Hedge', or a 'Speculative Lottery'.
+2. Look for Bullish/Bearish Divergence: Is the whale betting AGAINST the macro sentiment? (High conviction).
+3. If this is routine noise or small relative to the ticker's history, reply ONLY with "NOT_UNUSUAL".
+4. If it is significant, provide a ONE SHORT sentence analysis that sounds professional and definitive.
+Example: 'Massive bullish divergence; whale betting on recovery despite macro fear.'"""
 
         response = model.generate_content(prompt)
         text = response.text.strip()
@@ -44,15 +53,17 @@ Focus on: 'Lottery play', 'Hedge', or 'Deep Conviction'."""
         logging.error(f"Gemini failed: {e}")
         return ""
 
-async def send_alert(trade, ticker_context=""):
-    """Sends alert to Telegram with historical context."""
-    ai_msg = get_ai_summary(trade, ticker_context)
+async def send_alert(trade, ticker_context="", macro_context=None):
+    """Sends alert to Telegram with historical and macro context."""
+    ai_msg = get_ai_summary(trade, ticker_context, macro_context)
     
     if ai_msg == "SKIP_ALERT":
-        logging.info(f"AI Filtered out {trade['ticker']} as not unusual based on history.")
+        logging.info(f"AI Filtered out {trade['ticker']} as not unusual based on history/macro.")
         return False 
         
+    m = macro_context or {'spy_pc': 0, 'vix_pc': 0, 'sentiment': "Neutral"}
     bot = Bot(token=TELEGRAM_TOKEN)
+    
     msg = f"""🚨 WHALE ALERT 🚨
 {trade['ticker']} {trade['type']} {trade['strike']} {trade['exp']}
 Vol: {trade['volume']} • Notional: ${trade['notional']:,}
@@ -60,6 +71,7 @@ Score: {trade['score']} • RelVol: {trade['rel_vol']}x • Z: {trade['z_score']
 Stock Heat Z: {trade['stock_z']}
 IV: {trade['iv']*100:.1f}% • Premium: ${trade['premium']}
 
+🌍 MACRO: {m['sentiment']} (SPY {m['spy_pc']}%)
 📊 CONTEXT (Last 2 Days):
 {ticker_context}
 {ai_msg}"""

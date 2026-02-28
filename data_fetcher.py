@@ -27,6 +27,29 @@ else:
     logging.error("❌ Cloudflare Bridge DISABLED: CLOUDFLARE_PROXY_URL missing!")
 # ---------------------------------------
 
+def get_macro_context():
+    """Fetches the current daily performance of SPY and VIX for macro context."""
+    try:
+        spy = yf.Ticker("SPY")
+        vix = yf.Ticker("^VIX")
+        
+        spy_change = spy.fast_info.get('day_change_percent', 0)
+        vix_change = vix.fast_info.get('day_change_percent', 0)
+        
+        sentiment = "Neutral"
+        if spy_change < -1.0 and vix_change > 5.0: sentiment = "Fearful / Risk-Off"
+        if spy_change > 0.5 and vix_change < -3.0: sentiment = "Bullish / Risk-On"
+        if spy_change < -2.0: sentiment = "Extremely Bearish / Panic"
+        
+        return {
+            'spy_pc': round(spy_change, 2),
+            'vix_pc': round(vix_change, 2),
+            'sentiment': sentiment
+        }
+    except Exception as e:
+        logging.error(f"Macro fetch failed: {e}")
+        return {'spy_pc': 0, 'vix_pc': 0, 'sentiment': "Unknown"}
+
 def get_stock_info(ticker):
     """Fetches just the stock price and volume (Fast/Light)."""
     try:
