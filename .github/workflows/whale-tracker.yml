@@ -34,10 +34,16 @@ jobs:
           CLOUDFLARE_PROXY_URL: ${{ secrets.CLOUDFLARE_PROXY_URL }}
         run: python main_github.py
 
+      - name: Run Performance Backtester
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python backtester.py
+
       - name: Commit Files
         run: |
           git config --global user.name "FlowGod-Bot"
           git config --global user.email "bot@flowgod.ai"
-          git add historical_data.csv database.db
+          git add historical_data.csv database.db trades_to_verify.csv
           git commit -m "Update persistent data [skip ci]" || echo "No changes to commit"
           git push origin master

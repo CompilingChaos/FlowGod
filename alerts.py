@@ -2,7 +2,7 @@ import asyncio
 import os
 import logging
 import json
-from telegram import Bot
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, GEMINI_API_KEY
 from google import genai
 from historical_db import get_rag_context
@@ -12,15 +12,13 @@ from scanner import generate_system_verdict
 def get_ai_summary(trade, ticker_context="", macro_context=None):
     if not GEMINI_API_KEY: return None
     try:
-        # Initialize the new Client
         client = genai.Client(api_key=GEMINI_API_KEY)
-        
         m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Neutral"}
         macro_str = f"Market: {m['sentiment']} (SPY: {m['spy']}%, DXY: {m['dxy']}%, TNX: {m['tnx']}%)"
         rag_context = get_rag_context(trade['ticker'], trade['type'])
         sys_verdict, sys_logic = generate_system_verdict(trade)
 
-        prompt = f"""As an institutional flow expert, evaluate this trade and its generated 'System Verdict'.
+        prompt = f"""As an institutional flow expert, evaluate this trade.
 
 TICKER: {trade['ticker']} {trade['type']} {trade['strike']} | Exp: {trade['exp']}
 {macro_str}
@@ -36,8 +34,8 @@ Volatility: Skew is {trade['skew']} ({trade['bias']} bias)
 Technicals: Call Wall: ${trade['call_wall']} | Put Wall: ${trade['put_wall']} | Flip: ${trade['flip']}
 
 AI INSTRUCTIONS:
-1. Validate the SYSTEM VERDICT. Suggest a more conservative trade (e.g. BUY STOCK instead of CALL) if macro or RAG winrates are poor.
-2. Only suggest trades compatible with Trade Republic (BUY, CALL, or PUT).
+1. Validate the SYSTEM VERDICT and suggest a Trade Republic compatible action (BUY, CALL, or PUT).
+2. ESTIMATE DURATION: How many days/weeks until this trade likely reaches its profit target based on DTE and GEX?
 3. Respond ONLY with JSON.
 
 RESPONSE SCHEMA:
@@ -45,24 +43,18 @@ RESPONSE SCHEMA:
   "is_unusual": boolean,
   "confidence_score": integer,
   "final_verdict": "BUY" | "CALL" | "PUT" | "NEUTRAL",
-  "verdict_reasoning": "Why you agree or disagreed with the system",
+  "estimated_duration": "string (e.g. 2-5 days)",
+  "verdict_reasoning": "...",
   "category": "...",
   "analysis": "..."
 }}"""
 
-        response = client.models.generate_content(
-            model="gemini-3-flash-preview", 
-            contents=prompt
-        )
-        
+        response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt)
         text = response.text.strip()
         if "```json" in text: text = text.split("```json")[1].split("```")[0].strip()
         elif "```" in text: text = text.split("```")[1].split("```")[0].strip()
-        
         return json.loads(text)
-    except Exception as e:
-        logging.error(f"New Gemini SDK failed: {e}")
-        return None
+    except: return None
 
 async def send_alert(trade, ticker_context="", macro_context=None):
     ai = get_ai_summary(trade, ticker_context, macro_context)
@@ -79,7 +71,8 @@ async def send_alert(trade, ticker_context="", macro_context=None):
 {stars} (Conviction: {ai['confidence_score'] if ai and 'confidence_score' in ai else '??'}%)
 
 🏁 VERDICT: {final_v}
-Reasoning: {ai['verdict_reasoning'] if ai and 'verdict_reasoning' in ai else sys_l}
+⏳ EST. DURATION: {ai['estimated_duration'] if ai else 'Unknown'}
+Reasoning: {ai['verdict_reasoning'] if ai else sys_l}
 
 📊 TRADE DETAILS:
 Type: {trade['type']} {trade['strike']} | Exp: {trade['exp']}
@@ -95,8 +88,13 @@ Gamma Flip: ${trade['flip']}
 Category: {ai['category'] if ai and 'category' in ai else 'Unknown'}
 Analysis: {ai['analysis'] if ai and 'analysis' in ai else 'N/A'}"""
 
+    # Add "Save Trade" button
+    # Data is encoded in callback_data (Limited to 64 bytes, so we just send the contract symbol)
+    keyboard = [[InlineKeyboardButton("💾 SAVE TRADE", callback_data=f"save_{trade['contract']}_{trade['underlying_price']}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
     try:
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, reply_markup=reply_markup)
         return True
     except Exception as e:
         logging.error(f"Telegram failed: {e}")
