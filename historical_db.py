@@ -28,7 +28,6 @@ def load_from_csv():
             conn = init_db()
             if conn:
                 df.to_sql('hist_vol_oi', conn, if_exists='replace', index=False)
-                logging.info(f"Loaded {len(df)} historical records.")
         except Exception as e:
             logging.error(f"Error loading CSV: {e}")
 
@@ -39,9 +38,33 @@ def save_to_csv():
         cutoff = (datetime.now() - timedelta(days=60)).date().isoformat()
         df = pd.read_sql_query("SELECT * FROM hist_vol_oi WHERE date >= ?", conn, params=(cutoff,))
         df.to_csv(HISTORICAL_CSV, index=False)
-        logging.info(f"Saved {len(df)} historical records.")
     except Exception as e:
         logging.error(f"Error saving CSV: {e}")
+
+def get_ticker_context(ticker, days=2):
+    """Summarizes the last X days of activity for a specific ticker."""
+    conn = init_db()
+    if not conn: return "No historical context available."
+    cutoff = (datetime.now() - timedelta(days=days)).date().isoformat()
+    
+    query = """
+        SELECT date, SUM(volume) as total_vol, SUM(oi) as total_oi 
+        FROM hist_vol_oi 
+        WHERE ticker = ? AND date >= ?
+        GROUP BY date ORDER BY date DESC
+    """
+    try:
+        df = pd.read_sql_query(query, conn, params=(ticker, cutoff))
+        if df.empty:
+            return "First time seeing this ticker in 48 hours."
+        
+        context_str = "Last 48h Context:\n"
+        for _, row in df.iterrows():
+            context_str += f"- {row['date']}: Vol {row['total_vol']:,}, OI {row['total_oi']:,}\n"
+        return context_str
+    except Exception as e:
+        logging.error(f"Context retrieval failed for {ticker}: {e}")
+        return "Context unavailable due to error."
 
 def update_historical(ticker, chain_df):
     conn = init_db()
