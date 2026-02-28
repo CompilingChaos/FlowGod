@@ -144,6 +144,15 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle=None):
 
         # 4. Filtering
         is_opening = row['volume'] > row['openInterest'] and row['volume'] > 500
+        
+        reasons = []
+        if is_opening: reasons.append("Vol > OI (Opening Position)")
+        if score >= 120: reasons.append("Ultra High Quantitative Score")
+        if near_flip: reasons.append(f"Technical Trigger: Near Gamma Flip (${flip_level})")
+        if trv_bonus >= 40: reasons.append("Intraday TRV Sweep Aggression")
+        if stock_z > 5: reasons.append("Extreme Stock-Level Volume Heat")
+        if trust_multiplier > 1.2: reasons.append(f"Ticker Trust Multiplier Boost ({trust_multiplier}x)")
+
         if is_opening or score >= 85:
             results.append({
                 'ticker': ticker, 'contract': row['contractSymbol'], 'type': row['side'].upper(),
@@ -153,7 +162,8 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle=None):
                 'z_score': round(z_score, 1), 'stock_z': round(stock_z, 1),
                 'delta': delta, 'gamma': gamma, 'vanna': vanna, 'charm': charm,
                 'gex': int(gex), 'flip': round(flip_level, 2), 'score': score,
-                'aggression': final_agg_label, 'sector': sector, 'bid': row['bid'], 'ask': row['ask']
+                'aggression': final_agg_label, 'sector': sector, 'bid': row['bid'], 'ask': row['ask'],
+                'detection_reason': ", ".join(reasons) if reasons else "High Quantitative Conviction"
             })
             
     return pd.DataFrame(results)

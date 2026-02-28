@@ -31,6 +31,9 @@ GEX (Dealer Hedge): ${trade['gex']:,} | Gamma Flip Level: ${trade['flip']}
 Notional Value: ${trade['notional']:,}
 Option Z-Score: {trade['z_score']} | IV: {trade['iv']*100:.1f}%
 
+DETECTION CONTEXT:
+System flagged this due to: {trade.get('detection_reason', 'N/A')}
+
 MACRO ENVIRONMENT:
 {macro_str}
 
@@ -110,6 +113,7 @@ DXY: {m['dxy']}% | TNX: {m['tnx']}% | QQQ: {m['qqq']}%
 Size: {rb.get('size',0)} | Vol/OI: {rb.get('vol_oi',0)} | Agg: {rb.get('aggression',0)}
 Hedge: {rb.get('macro_hedge',0)} | Tech: {rb.get('technicals',0)}
 
+Detection logic: {trade.get('detection_reason', 'N/A')}
 Category: {ai['category'] if ai else 'Unknown'}
 Analysis: {ai['analysis'] if ai else 'N/A'}"""
 
