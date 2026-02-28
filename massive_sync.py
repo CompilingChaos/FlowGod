@@ -4,54 +4,64 @@ import pandas as pd
 import numpy as np
 import logging
 from datetime import datetime, timedelta
-from config import MASSIVE_API_KEY, WATCHLIST_FILE, BASELINE_DAYS
+from config import MASSIVE_API_KEY, ALPHA_VANTAGE_API_KEY, WATCHLIST_FILE, BASELINE_DAYS
 from historical_db import update_ticker_baseline
 
-import yfinance as yf
-
-# Persistent Session for yfinance to avoid rate limits
-yf_session = requests.Session()
-yf_session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-})
-
 def sync_baselines():
-    if not MASSIVE_API_KEY:
-        logging.error("No MASSIVE_API_KEY found. Skipping sync.")
-        return
-
     try:
         watchlist = pd.read_csv(WATCHLIST_FILE)['ticker'].tolist()
     except Exception as e:
         logging.error(f"Failed to read watchlist: {e}")
         return
 
-    logging.info(f"Starting Multi-Source Baseline Sync for {len(watchlist)} tickers...")
+    logging.info(f"Starting Multi-Source Baseline Sync (Massive + Alpha Vantage)...")
     
-    # Massive.com Window (Shifted)
+    # Massive.com Window (Shifted back 3 days for free tier)
     end_date = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=63)).strftime('%Y-%m-%d') 
 
     for i, ticker in enumerate(watchlist):
         try:
-            # OPTION 1: Non-US Ticker (Use yfinance as fallback)
+            # OPTION 1: Non-US Ticker (Use Alpha Vantage)
             if "." in ticker:
-                logging.info(f"Syncing non-US ticker {ticker} via yfinance fallback...")
-                stock = yf.Ticker(ticker, session=yf_session)
-                hist = stock.history(period="60d") 
-                if not hist.empty and 'Volume' in hist:
-                    volumes = hist['Volume'].tail(BASELINE_DAYS).tolist()
+                if not ALPHA_VANTAGE_API_KEY:
+                    logging.warning(f"No ALPHA_VANTAGE_API_KEY for {ticker}. Skipping.")
+                    continue
+
+                logging.info(f"Syncing non-US ticker {ticker} via Alpha Vantage...")
+                # Map dots for Alpha Vantage (e.g., RHM.DE -> RHM.DEX) if needed, 
+                # but Alpha Vantage often supports standard suffixes.
+                url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}&apikey={ALPHA_VANTAGE_API_KEY}"
+                
+                response = requests.get(url)
+                data = response.json()
+
+                if "Time Series (Daily)" in data:
+                    # Get the last 30 trading days of volume
+                    time_series = data["Time Series (Daily)"]
+                    # Extract '5. volume' and convert to int
+                    volumes = [int(v['5. volume']) for k, v in list(time_series.items())[:BASELINE_DAYS]]
+                    
                     if len(volumes) > 5:
                         avg_vol = np.mean(volumes)
                         std_dev = np.std(volumes)
                         update_ticker_baseline(ticker, avg_vol, std_dev)
-                        logging.info(f"Updated {ticker} (yfinance): Avg Vol {avg_vol:,.0f}")
+                        logging.info(f"Updated {ticker} (AlphaV): Avg Vol {avg_vol:,.0f}")
+                    else:
+                        logging.warning(f"Not enough data for {ticker} (AlphaV)")
+                else:
+                    err = data.get("Note") or data.get("Error Message") or "Unknown AlphaV Error"
+                    logging.error(f"Alpha Vantage failed for {ticker}: {err}")
                 
-                # Sleep even for yfinance to avoid GitHub Actions IP blocks
-                time.sleep(5)
+                # Alpha Vantage Rate Limit: 5 calls per minute -> 15 sec delay
+                time.sleep(15)
                 continue
 
             # OPTION 2: US Ticker (Use Massive.com)
+            if not MASSIVE_API_KEY:
+                logging.warning(f"No MASSIVE_API_KEY for {ticker}. Skipping.")
+                continue
+
             url = f"https://api.massive.com/v2/aggs/ticker/{ticker}/range/1/day/{start_date}/{end_date}?adjusted=true&sort=desc&limit={BASELINE_DAYS}&apiKey={MASSIVE_API_KEY}"
             
             response = requests.get(url)
@@ -67,10 +77,10 @@ def sync_baselines():
                 else:
                     logging.warning(f"Not enough data for {ticker} (got {len(volumes)} days)")
             else:
-                error_msg = data.get('error') or data.get('status') or "Unknown API Error"
+                error_msg = data.get('error') or data.get('status') or "Unknown Massive Error"
                 logging.error(f"Massive.com error for {ticker} (Status {response.status_code}): {error_msg}")
 
-            # Rate Limit: 5 requests per minute for Massive.com
+            # Massive.com Rate Limit: 5 requests per minute -> 13 sec delay
             if i < len(watchlist) - 1:
                 time.sleep(13) 
 
