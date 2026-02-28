@@ -26,7 +26,7 @@ FlowGod is a sophisticated options flow scanner and whale tracking tool, inspire
 - **Data Source**: `yfinance` (Yahoo Finance API)
 - **Language**: Python 3.14+
 - **Database**: SQLite (bridged with CSV for GitHub persistence)
-- **AI Engine**: Google Gemini 1.5 Flash
+- **AI Engine**: Google Gemini 3 Flash
 - **Communication**: Telegram Bot API
 - **Workflow**: GitHub Actions
 
