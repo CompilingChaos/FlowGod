@@ -4,7 +4,7 @@ import pandas as pd
 import random
 import logging
 import re
-from data_fetcher import get_stock_info, get_option_chain_data, get_macro_context, get_contract_oi
+from data_fetcher import get_stock_info, get_option_chain_data, get_advanced_macro, get_contract_oi
 from scanner import score_unusual, get_stock_heat, process_results
 from alerts import send_alert, send_confirmation_alert
 from historical_db import (
@@ -29,7 +29,7 @@ async def process_ticker_sequential(ticker):
         if price == 0 or stock_vol == 0:
             return []
 
-        # 2. Step 2: Heat Check (returns Z and Sector)
+        # 2. Step 2: Heat Check
         stock_z, sector = get_stock_heat(ticker, stock_vol)
         
         # 3. Step 3: Conditional Heavy Fetch
@@ -82,24 +82,24 @@ async def verify_stickiness():
             if not ticker_match: continue
             ticker = ticker_match.group(1)
             
-            # 3. Vector 5 Math: How much of yesterday's volume translated to new OI?
+            # 3. Math: How much of yesterday's volume translated to new OI?
             oi_change = live_oi - yest_oi
             stickiness_ratio = oi_change / yest_vol if yest_vol > 0 else 0
             percentage = stickiness_ratio * 100
 
             if stickiness_ratio >= 0.70: # 70% HELD
-                logging.info(f"✅ VECTOR 5 CONFIRMED: {contract} held {percentage:.1f}%")
+                logging.info(f"✅ CONFIRMED: {contract} held {percentage:.1f}%")
                 await send_confirmation_alert(ticker, contract, oi_change, percentage)
-                update_trust_score(ticker, 0.15) # Aggressive Vector 5 reward
+                update_trust_score(ticker, 0.15) 
                 mark_alert_confirmed(contract, 1)
-            elif stickiness_ratio < 0.20: # 20% FADE (Day Trade)
-                logging.info(f"❌ VECTOR 5 FADED: {contract} only held {percentage:.1f}%")
-                update_trust_score(ticker, -0.05) # Penalty for noise
+            elif stickiness_ratio < 0.20: # 20% FADE
+                logging.info(f"❌ FADED: {contract} only held {percentage:.1f}%")
+                update_trust_score(ticker, -0.05) 
                 mark_alert_confirmed(contract, -1)
             else:
-                mark_alert_confirmed(contract, 2) # Neutral
+                mark_alert_confirmed(contract, 2) 
         except Exception as e:
-            logging.error(f"Vector 5 Check failed for {contract}: {e}")
+            logging.error(f"Stickiness Check failed for {contract}: {e}")
 
 async def scan_cycle():
     # 1. Pre-Scan Prep
@@ -109,9 +109,9 @@ async def scan_cycle():
     # 2. Stickiness Verification
     await verify_stickiness()
     
-    # 3. Global Macro Context
-    macro = get_macro_context()
-    logging.info(f"Macro Sentiment: {macro['sentiment']} (SPY: {macro['spy_pc']}%, VIX: {macro['vix_pc']}%)")
+    # 3. Advanced Macro Context
+    macro = get_advanced_macro()
+    logging.info(f"Macro: {macro['sentiment']} (SPY {macro['spy']}%, DXY {macro['dxy']}%)")
 
     watchlist = pd.read_csv(WATCHLIST_FILE)['ticker'].tolist()[:MAX_TICKERS]
     logging.info(f"Starting sequential scan for {len(watchlist)} tickers...")
@@ -139,7 +139,7 @@ async def scan_cycle():
         logging.info(f"Analyzing high-conviction flow for {trade['ticker']}...")
         sent = await send_alert(trade, context, macro)
         
-        # VECTOR 5: Store EXACT vol and oi at time of alert
+        # Store EXACT vol and oi at time of alert
         mark_alert_sent(trade['contract'], vol=trade['volume'], oi=trade['oi'])
 
         if sent:

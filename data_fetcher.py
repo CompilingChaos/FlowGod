@@ -27,28 +27,36 @@ else:
     logging.error("❌ Cloudflare Bridge DISABLED: CLOUDFLARE_PROXY_URL missing!")
 # ---------------------------------------
 
-def get_macro_context():
-    """Fetches the current daily performance of SPY and VIX for macro context."""
+def get_advanced_macro():
+    """Fetches global macro context (SPY, VIX, DXY, TNX) for institutional analysis."""
     try:
+        # Use Ticker objects to leverage the existing Cloudflare bridge patch
         spy = yf.Ticker("SPY")
         vix = yf.Ticker("^VIX")
+        dxy = yf.Ticker("DX-Y.NYB") # US Dollar Index
+        tnx = yf.Ticker("^TNX")      # 10Y Treasury Yield
         
-        spy_change = spy.fast_info.get('day_change_percent', 0)
-        vix_change = vix.fast_info.get('day_change_percent', 0)
+        spy_pc = spy.fast_info.get('day_change_percent', 0)
+        vix_pc = vix.fast_info.get('day_change_percent', 0)
+        dxy_pc = dxy.fast_info.get('day_change_percent', 0)
+        tnx_pc = tnx.fast_info.get('day_change_percent', 0)
         
         sentiment = "Neutral"
-        if spy_change < -1.0 and vix_change > 5.0: sentiment = "Fearful / Risk-Off"
-        if spy_change > 0.5 and vix_change < -3.0: sentiment = "Bullish / Risk-On"
-        if spy_change < -2.0: sentiment = "Extremely Bearish / Panic"
+        if spy_pc < -1.0 and vix_pc > 5.0: sentiment = "Fearful / Risk-Off"
+        if spy_pc > 0.5 and vix_pc < -3.0: sentiment = "Bullish / Risk-On"
+        if dxy_pc > 0.5: sentiment += " | Liquidity Squeeze (DXY Up)"
+        if tnx_pc > 1.0: sentiment += " | Yield Pressure (TNX Up)"
         
         return {
-            'spy_pc': round(spy_change, 2),
-            'vix_pc': round(vix_change, 2),
+            'spy': round(spy_pc, 2),
+            'vix': round(vix_pc, 2),
+            'dxy': round(dxy_pc, 2),
+            'tnx': round(tnx_pc, 2),
             'sentiment': sentiment
         }
     except Exception as e:
-        logging.error(f"Macro fetch failed: {e}")
-        return {'spy_pc': 0, 'vix_pc': 0, 'sentiment': "Unknown"}
+        logging.error(f"Advanced macro fetch failed: {e}")
+        return {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'sentiment': "Unknown"}
 
 def get_stock_info(ticker):
     """Fetches just the stock price and volume (Fast/Light)."""

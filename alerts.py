@@ -17,10 +17,10 @@ def get_ai_summary(trade, ticker_context="", macro_context=None):
         model = genai.GenerativeModel("gemini-3-flash")
         
         # Format Macro Context
-        m = macro_context or {'spy_pc': 0, 'vix_pc': 0, 'sentiment': "Neutral"}
-        macro_str = f"Market Sentiment: {m['sentiment']} (SPY: {m['spy_pc']}%, VIX: {m['vix_pc']}% change)"
+        m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'sentiment': "Neutral"}
+        macro_str = f"Market: {m['sentiment']} (SPY: {m['spy']}%, VIX: {m['vix']}%, DXY: {m['dxy']}%, TNX: {m['tnx']}%)"
 
-        prompt = f"""As an institutional options flow expert, analyze this trade and respond ONLY with a JSON object.
+        prompt = f"""As an institutional options flow analyst, evaluate this trade using the STRICT SCORING RUBRIC below.
 
 TICKER DATA:
 {trade['ticker']} {trade['type']} {trade['strike']} exp {trade['exp']} 
@@ -34,53 +34,57 @@ IV: {trade['iv']*100:.1f}%
 MACRO ENVIRONMENT:
 {macro_str}
 
-HISTORICAL TICKER CONTEXT (Last 2 Days):
+HISTORICAL TICKER CONTEXT:
 {ticker_context}
+
+SCORING RUBRIC (Each category is 0-20 points):
+1. SIZE: 20pts if notional > $500k, 10pts if > $100k.
+2. VOL/OI: 20pts if Vol > OI, 10pts if Vol > 0.5*OI.
+3. AGGRESSION: 20pts if 'Sweep/Ask', 10pts if above mid-point.
+4. MACRO ALIGNMENT: 20pts if trade direction matches divergence (e.g. Bullish while DXY/TNX dropping).
+5. URGENCY: 20pts if DTE < 14 days, 10pts if < 45 days.
 
 RESPONSE SCHEMA (JSON ONLY):
 {{
   "is_unusual": boolean,
-  "confidence_score": integer (1-100),
+  "confidence_score": integer (Sum of the 5 rubric points, 0-100),
+  "rubric_breakdown": {{ "size": int, "vol_oi": int, "aggression": int, "macro": int, "urgency": int }},
   "sentiment": "BULLISH" | "BEARISH" | "NEUTRAL",
   "category": "Aggressive Accumulation" | "Strategic Hedge" | "Speculative Lottery" | "Routine Flow",
-  "analysis": "One short professional sentence",
-  "divergence": "Describe any macro/stock divergence (e.g. Bullish bet into Panic)"
-}}
-
-If is_unusual is false, the other fields can be minimal."""
+  "analysis": "Standard institutional sentence",
+  "divergence": "Describe any macro/stock divergence"
+}}"""
 
         response = model.generate_content(prompt)
         text = response.text.strip()
         
-        # Clean potential markdown code blocks from AI response
+        # Clean potential markdown
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0].strip()
         elif "```" in text:
             text = text.split("```")[1].split("```")[0].strip()
 
         data = json.loads(text)
-        
         if not data.get("is_unusual", True):
             return "SKIP_ALERT"
             
         return data
     except Exception as e:
-        logging.error(f"Gemini JSON failed: {e} | Raw: {text if 'text' in locals() else 'N/A'}")
+        logging.error(f"Gemini Rubric failed: {e}")
         return None
 
 async def send_alert(trade, ticker_context="", macro_context=None):
-    """Sends detailed structured alert to Telegram."""
+    """Sends detailed rubric-based alert to Telegram."""
     ai = get_ai_summary(trade, ticker_context, macro_context)
     
     if ai == "SKIP_ALERT":
-        logging.info(f"AI Filtered out {trade['ticker']} via JSON logic.")
         return False 
         
-    m = macro_context or {'spy_pc': 0, 'vix_pc': 0, 'sentiment': "Neutral"}
+    m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'sentiment': "Neutral"}
     bot = Bot(token=TELEGRAM_TOKEN)
     
-    # Visual confidence meter
     stars = "⭐" * (ai['confidence_score'] // 20) if ai else "N/A"
+    rb = ai['rubric_breakdown'] if ai else {}
     
     msg = f"""🚨 WHALE ALERT: {trade['ticker']} 🚨
 {stars} (Conviction: {ai['confidence_score'] if ai else '??'}%)
@@ -97,14 +101,17 @@ Option Z: {trade['z_score']} | RelVol: {trade['rel_vol']}x
 Stock Heat Z: {trade['stock_z']}
 
 🌍 MACRO & CONTEXT:
-Macro: {m['sentiment']} (SPY {m['spy_pc']}%)
+Macro: {m['sentiment']}
+DXY: {m['dxy']}% | TNX: {m['tnx']}%
 {ticker_context}
 
-🧠 AI ANALYST:
+🧠 AI ANALYST (Rubric Breakdown):
+Size: {rb.get('size',0)} | Vol/OI: {rb.get('vol_oi',0)} | Agg: {rb.get('aggression',0)}
+Macro: {rb.get('macro',0)} | Urgency: {rb.get('urgency',0)}
+
 Category: {ai['category'] if ai else 'Unknown'}
-Sentiment: {ai['sentiment'] if ai else 'N/A'}
-Analysis: {ai['analysis'] if ai else 'Standard high-volume trade.'}
-Divergence: {ai['divergence'] if ai else 'None detected.'}"""
+Analysis: {ai['analysis'] if ai else 'N/A'}
+Divergence: {ai['divergence'] if ai else 'None.'}"""
 
     try:
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
