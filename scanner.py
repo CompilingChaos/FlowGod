@@ -27,24 +27,18 @@ def calculate_greeks(S, K, T, r, sigma, option_type='calls'):
     except: return 0, 0, 0, 0
 
 def calculate_volatility_surface(df):
-    """Maps IV Skew and Term Structure."""
     if df.empty: return 0, 0, "NEUTRAL"
     try:
-        # Term Structure
         term = df.groupby('dte')['impliedVolatility'].mean().sort_index()
         contango = term.iloc[1] - term.iloc[0] if len(term) > 1 else 0
-        
-        # IV Skew (25 Delta approximation)
         puts = df[(df['side'] == 'puts') & (df['strike'] < df['underlying_price'])]
         calls = df[(df['side'] == 'calls') & (df['strike'] > df['underlying_price'])]
         skew = puts['impliedVolatility'].mean() - calls['impliedVolatility'].mean()
-        
         bias = "BULLISH" if skew < -0.05 else "BEARISH" if skew > 0.10 else "NEUTRAL"
         return round(skew, 3), round(contango, 3), bias
     except: return 0, 0, "NEUTRAL"
 
 def map_gex_walls(df):
-    """Identifies the massive Call and Put walls across all expirations."""
     if df.empty: return 0, 0, 0
     try:
         df['net_gex'] = np.where(df['side'] == 'calls', 
@@ -53,8 +47,6 @@ def map_gex_walls(df):
         strike_gex = df.groupby('strike')['net_gex'].sum()
         call_wall = strike_gex.idxmax()
         put_wall = strike_gex.idxmin()
-        
-        # Zero Gamma Flip
         strike_gex_sorted = strike_gex.sort_index()
         flip = 0
         for i in range(len(strike_gex_sorted)-1):
@@ -64,54 +56,46 @@ def map_gex_walls(df):
         return call_wall, put_wall, flip
     except: return 0, 0, 0
 
+def calculate_trv_aggression(candle, ticker):
+    if not candle: return "Unknown", 0
+    try:
+        range_total = candle['High'] - candle['Low']
+        if range_total == 0: return "Neutral", 5
+        buyer_agg = (candle['Close'] - candle['Low']) / range_total
+        if buyer_agg > 0.8 and candle['Close'] > candle['vwap']:
+            return "Institutional Sweep (TRV Max)", 50
+        if candle.get('dark_z_max', 0) > 4.0:
+            return "Dark Pool Absorption", 60
+        return "Standard Flow", 10
+    except: return "Unknown", 0
+
+def classify_aggression(last_price, bid, ask):
+    if last_price >= ask and ask > 0: return "Aggressive (Ask)", 50
+    if last_price <= bid and bid > 0: return "Passive (Bid)", 0
+    return "Neutral (Mid)", 10
+
 def score_unusual(df, ticker, stock_z, sector="Unknown", candle=None):
     if df.empty: return pd.DataFrame()
-    
-    # 1. Surface Mapping
     skew, contango, vol_bias = calculate_volatility_surface(df)
-    
-    # 2. Advanced Greeks & GEX
-    # Pre-calculate Greeks for all rows to map walls
     for idx, row in df.iterrows():
         T = max(0.001, row['dte']) / 365.0
         d, g, v, c = calculate_greeks(row['underlying_price'], row['strike'], T, 0.045, row['impliedVolatility'], row['side'])
         df.at[idx, 'delta'], df.at[idx, 'gamma'], df.at[idx, 'vanna'], df.at[idx, 'charm'] = d, g, v, c
         df.at[idx, 'gex'] = g * row['openInterest'] * 100 * row['underlying_price']
-
     call_wall, put_wall, flip = map_gex_walls(df)
     spot = df.iloc[0]['underlying_price']
-    
-    # 3. Dark Pool Proxy
-    dark_z = candle.get('dark_z_max', 0) if candle else 0
-    trv_label = "Standard Flow"
-    trv_bonus = 0
-    if candle:
-        buyer_agg = (candle['Close'] - candle['Low']) / (candle['High'] - candle['Low'] + 0.01)
-        if buyer_agg > 0.8 and candle['Close'] > candle['vwap']:
-            trv_label, trv_bonus = "Institutional Sweep (TRV Max)", 50
-        elif dark_z > 4.0:
-            trv_label, trv_bonus = "Dark Pool Absorption Detected", 60
-
+    trv_label, trv_bonus = calculate_trv_aggression(candle, ticker)
     baseline = get_ticker_baseline(ticker)
     trust_mult = baseline.get('trust_score', 1.0) if baseline else 1.0
     results = []
-
     for _, row in df.iterrows():
-        # Aggression
-        agg_label, agg_bonus = "Neutral (Mid)", 10
-        if row['lastPrice'] >= row['ask'] and row['ask'] > 0: agg_label, agg_bonus = "Aggressive (Ask)", 50
-        elif row['lastPrice'] <= row['bid'] and row['bid'] > 0: agg_label, agg_bonus = "Passive (Bid)", 0
-        
+        agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
         score = 0
         if row['volume'] > 1000: score += 20
         if row['notional'] > 500000: score += 40
         score += agg_bonus + trv_bonus
-        
-        # ALPHA BONUSES
-        if abs(spot - call_wall) / spot < 0.01: score -= 30 # Into resistance
+        if abs(spot - call_wall) / spot < 0.01: score -= 30
         if (vol_bias == "BULLISH" and row['side'] == 'calls') or (vol_bias == "BEARISH" and row['side'] == 'puts'): score += 40
-        if abs(row['delta']) > 0.45 and abs(row['delta']) < 0.55: score += 30
-        
         score = int(score * trust_mult)
         if (row['volume'] > row['openInterest'] and row['volume'] > 500) or score >= 85:
             results.append({
@@ -122,26 +106,46 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle=None):
                 'delta': row['delta'], 'gamma': row['gamma'], 'vanna': row['vanna'], 'charm': row['charm'],
                 'gex': int(row['gex']), 'call_wall': call_wall, 'put_wall': put_wall, 'flip': flip,
                 'skew': skew, 'bias': vol_bias, 'score': score, 'aggression': f"{agg_label} | {trv_label}",
-                'sector': sector, 'bid': row['bid'], 'ask': row['ask'],
-                'detection_reason': f"Conviction Score {score} | {vol_bias} Skew"
+                'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
+                'detection_reason': f"Score {score} | {vol_bias} Skew"
             })
     return pd.DataFrame(results)
+
+def generate_system_verdict(trade):
+    """Generates a math-driven trade recommendation for Trade Republic."""
+    t_type = trade['type']
+    spot = trade.get('underlying_price', 0)
+    call_wall = trade.get('call_wall', 0)
+    put_wall = trade.get('put_wall', 0)
+    skew = trade.get('skew', 0)
+    agg = trade.get('aggression', "")
+    
+    verdict, logic = "NEUTRAL", "Insufficient data for conviction."
+    
+    if "CALL" in t_type and "Aggressive" in agg:
+        if skew < 0: verdict, logic = "CALL (Long)", "Aggressive Call sweep with Bullish Skew."
+        elif spot > 0 and put_wall > 0 and (spot - put_wall) / spot < 0.02: verdict, logic = "CALL (Long)", "Whale entry at Put Wall support."
+        else: verdict, logic = "BUY (Stock)", "Bullish flow but Skew/Walls suggest conservative entry."
+    elif "PUT" in t_type and "Aggressive" in agg:
+        if skew > 0.05: verdict, logic = "PUT (Short)", "Aggressive Put sweep with Bearish Skew."
+        elif spot > 0 and call_wall > 0 and (call_wall - spot) / spot < 0.02: verdict, logic = "PUT (Short)", "Whale entry at Call Wall resistance."
+        else: verdict, logic = "PUT (Short)", "Bearish flow detected with moderate conviction."
+    elif "Dark Pool" in agg or "Absorption" in agg:
+        verdict, logic = "BUY (Stock)", "Institutional absorption detected. Long-term accumulation."
+
+    return verdict, logic
 
 def process_results(all_results, macro_context, sector_performance):
     if not all_results: return []
     df = pd.DataFrame(all_results)
-    
-    # --- MULTI-LEG REVERSE ENGINEERING ---
     linked_alerts = []
     for (ticker, exp), group in df.groupby(['ticker', 'exp']):
         if len(group) >= 2:
-            # Check for Vertical Spread (Same side, similar vol, different strikes)
             for side in ['CALLS', 'PUTS']:
                 legs = group[group['type'] == side].sort_values('strike')
                 if len(legs) >= 2:
                     leg1, leg2 = legs.iloc[0], legs.iloc[1]
-                    vol_diff = abs(leg1['volume'] - leg2['volume']) / max(leg1['volume'], 1)
-                    if vol_diff < 0.2: # High volume correlation
+                    if abs(leg1['volume'] - leg2['volume']) / max(leg1['volume'], 1) < 0.2:
                         strategy = "Bull Call Spread" if side == 'CALLS' else "Bear Put Spread"
                         best_leg = legs.loc[legs['score'].idxmax()].to_dict()
                         best_leg['type'] = f"🔗 {strategy.upper()}"
@@ -150,8 +154,6 @@ def process_results(all_results, macro_context, sector_performance):
                         best_leg['score'] += 40
                         linked_alerts.append(best_leg)
                         df = df[~df['contract'].isin(legs['contractSymbol'])]
-    
-    # Handle remaining individual trades and clusters
     final_alerts = linked_alerts
     for ticker, t_group in df.groupby('ticker'):
         if len(t_group) >= 3:

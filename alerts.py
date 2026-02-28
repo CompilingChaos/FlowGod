@@ -6,6 +6,7 @@ from telegram import Bot
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 import google.generativeai as genai
 from historical_db import get_rag_context
+from scanner import generate_system_verdict
 
 def get_ai_summary(trade, ticker_context="", macro_context=None):
     gemini_key = os.getenv("GEMINI_API_KEY")
@@ -16,36 +17,39 @@ def get_ai_summary(trade, ticker_context="", macro_context=None):
         
         m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Neutral"}
         macro_str = f"Market: {m['sentiment']} (SPY: {m['spy']}%, DXY: {m['dxy']}%, TNX: {m['tnx']}%)"
-        
-        # Retrieval-Augmented Context
         rag_context = get_rag_context(trade['ticker'], trade['type'])
+        
+        # System Verdict for AI to Validate
+        sys_verdict, sys_logic = generate_system_verdict(trade)
 
-        prompt = f"""As an institutional flow expert, analyze this trade using the RUBRIC.
+        prompt = f"""As an institutional flow expert, evaluate this trade and its generated 'System Verdict'.
 
 TICKER: {trade['ticker']} {trade['type']} {trade['strike']} | Exp: {trade['exp']}
 {macro_str}
 {rag_context}
 
+SYSTEM VERDICT: {sys_verdict}
+SYSTEM LOGIC: {sys_logic}
+
 TRADE SPECS:
-Vol: {trade['volume']} | Premium: ${trade['premium']} | Aggression: {trade['aggression']}
+Vol: {trade['volume']} | Aggression: {trade['aggression']}
 Delta: {trade['delta']} | Gamma: {trade['gamma']} | GEX: ${trade['gex']:,}
 Volatility: Skew is {trade['skew']} ({trade['bias']} bias)
 Technicals: Call Wall: ${trade['call_wall']} | Put Wall: ${trade['put_wall']} | Flip: ${trade['flip']}
 
-RUBRIC (0-20 pts each):
-1. SIZE (> $500k = 20)
-2. ALPHA (Sweep/Ask/Dark Pool = 20)
-3. HEDGING (Gamma Squeeze/Wall break = 20)
-4. BIAS (Direction matches Skew/Macro = 20)
-5. RAG (High historical winrate = 20)
+AI INSTRUCTIONS:
+1. Validate the SYSTEM VERDICT. Suggest a more conservative trade (e.g. BUY STOCK instead of CALL) if macro or RAG winrates are poor.
+2. Only suggest trades compatible with Trade Republic (BUY, CALL, or PUT).
+3. Respond ONLY with JSON.
 
-RESPONSE SCHEMA (JSON ONLY):
+RESPONSE SCHEMA:
 {{
   "is_unusual": boolean,
   "confidence_score": integer,
-  "rubric": {{ "size": int, "alpha": int, "hedge": int, "bias": int, "rag": int }},
-  "category": "Aggressive Accumulation" | "Strategic Hedge" | "Speculative Lottery",
-  "analysis": "Professional 1-sentence summary"
+  "final_verdict": "BUY" | "CALL" | "PUT" | "NEUTRAL",
+  "verdict_reasoning": "Why you agree or disagreed with the system",
+  "category": "...",
+  "analysis": "..."
 }}"""
 
         response = model.generate_content(prompt)
@@ -62,10 +66,16 @@ async def send_alert(trade, ticker_context="", macro_context=None):
     m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Neutral"}
     bot = Bot(token=TELEGRAM_TOKEN)
     stars = "⭐" * (ai['confidence_score'] // 20) if ai else "N/A"
-    rb = ai.get('rubric', {}) if ai else {}
+    
+    # Simple System Verdict fallback
+    sys_v, sys_l = generate_system_verdict(trade)
+    final_v = ai['final_verdict'] if ai else sys_v
     
     msg = f"""🚨 FLOWGOD ALPHA: {trade['ticker']} 🚨
 {stars} (Conviction: {ai['confidence_score'] if ai else '??'}%)
+
+🏁 VERDICT: {final_v}
+Reasoning: {ai['verdict_reasoning'] if ai else sys_l}
 
 📊 TRADE DETAILS:
 Type: {trade['type']} {trade['strike']} | Exp: {trade['exp']}
@@ -77,12 +87,8 @@ GEX Pressure: ${trade['gex']:,}
 Call Wall: ${trade['call_wall']} | Put Wall: ${trade['put_wall']}
 Gamma Flip: ${trade['flip']}
 
-🌊 VOL SURFACE:
-Skew: {trade['skew']} ({trade['bias']} Bias)
-
 🧠 AI ANALYST:
 Category: {ai['category'] if ai else 'Unknown'}
-Rubric: S:{rb.get('size',0)} A:{rb.get('alpha',0)} H:{rb.get('hedge',0)} B:{rb.get('bias',0)} R:{rb.get('rag',0)}
 Analysis: {ai['analysis'] if ai else 'N/A'}"""
 
     try:
