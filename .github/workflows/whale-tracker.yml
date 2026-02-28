@@ -10,7 +10,7 @@ jobs:
   track_whales:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Allows committing the DB back to the repo
+      contents: write # Allows committing the CSV back to the repo
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -31,10 +31,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python main_github.py
 
-      - name: Commit Database Changes
+      - name: Commit Historical Data
         run: |
           git config --global user.name "FlowGod-Bot"
           git config --global user.email "bot@flowgod.ai"
-          git add database.db
-          git commit -m "Update historical volume/OI data [skip ci]" || echo "No changes to commit"
+          git add historical_data.csv
+          git commit -m "Update persistent historical data [skip ci]" || echo "No changes to commit"
           git push origin master

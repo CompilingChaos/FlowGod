@@ -5,9 +5,12 @@ from data_fetcher import get_options_data
 from scanner import score_unusual
 from alerts import send_alert
 from historical_db import update_historical
-from historical_db import update_historical, is_alert_sent, mark_alert_sent
+from historical_db import update_historical, is_alert_sent, mark_alert_sent, load_from_csv, save_to_csv
 
 async def scan_cycle():
+    # 1. Load historical data into SQLite from CSV
+    load_from_csv()
+    
     watchlist = pd.read_csv(WATCHLIST_FILE)['ticker'].tolist()[:MAX_TICKERS]
     for ticker in watchlist:
         try:
@@ -28,6 +31,9 @@ async def scan_cycle():
 
         except Exception as e:
             print(f"Error on {ticker}: {e}")
+            
+    # 2. Export updated database back to CSV
+    save_to_csv()
 
 if __name__ == "__main__":
     print("Starting FlowGod Whale Tracker (GitHub Actions Mode)")

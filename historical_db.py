@@ -1,18 +1,40 @@
 import sqlite3
 import pandas as pd
+import os
 from datetime import datetime, timedelta
 from config import DB_FILE
 
+HISTORICAL_CSV = "historical_data.csv"
+
 def init_db():
     conn = sqlite3.connect(DB_FILE)
-    # Historical Volume/OI table
     conn.execute('''CREATE TABLE IF NOT EXISTS hist_vol_oi 
                  (ticker TEXT, contract TEXT, date TEXT, volume INTEGER, oi INTEGER)''')
-    # Deduplication table for alerts
     conn.execute('''CREATE TABLE IF NOT EXISTS alerts_sent 
                  (contract TEXT PRIMARY KEY, timestamp TEXT)''')
     conn.commit()
     return conn
+
+def load_from_csv():
+    if os.path.exists(HISTORICAL_CSV):
+        try:
+            df = pd.read_csv(HISTORICAL_CSV)
+            conn = init_db()
+            df.to_sql('hist_vol_oi', conn, if_exists='replace', index=False)
+            print(f"Loaded {len(df)} historical records from CSV.")
+        except Exception as e:
+            print(f"Error loading CSV: {e}")
+
+def save_to_csv():
+    conn = init_db()
+    try:
+        # Keep only last 60 days in CSV to keep it lean
+        cutoff = (datetime.now() - timedelta(days=60)).date().isoformat()
+        df = pd.read_sql_query("SELECT * FROM hist_vol_oi WHERE date >= ?", conn, params=(cutoff,))
+        df.to_csv(HISTORICAL_CSV, index=False)
+        print(f"Saved {len(df)} historical records to CSV.")
+    except Exception as e:
+        print(f"Error saving CSV: {e}")
 
 def update_historical(ticker, chain_df):
     conn = init_db()
@@ -36,11 +58,9 @@ def get_avg_vol_oi(ticker, contract, days=30):
 
 def is_alert_sent(contract):
     conn = init_db()
-    # Auto-clean alerts older than 24h
     cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
     conn.execute("DELETE FROM alerts_sent WHERE timestamp < ?", (cutoff,))
     conn.commit()
-    
     res = conn.execute("SELECT 1 FROM alerts_sent WHERE contract = ?", (contract,)).fetchone()
     return res is not None
 
