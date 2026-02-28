@@ -50,10 +50,18 @@ async def scan_cycle():
     # 3. Process results and send alerts sequentially
     for ticker, trades in results:
         for trade in trades:
-            logging.info(f"Alert found for {ticker}!")
-            await send_alert(trade)
+            logging.info(f"Analyzing potential whale for {ticker}...")
+            
+            # send_alert now returns True (sent), False (skipped/error)
+            sent = await send_alert(trade)
+            
+            # Even if AI skipped it, we mark it as "sent" so we don't 
+            # re-ask the AI to analyze the same noise every 30 mins.
             mark_alert_sent(trade['contract'])
-            await asyncio.sleep(1) # Small delay between Telegram messages
+            
+            if sent:
+                logging.info(f"Alert SENT for {ticker}!")
+                await asyncio.sleep(1) # Small delay between Telegram messages
             
     # 4. Export updated database back to CSV
     save_to_csv()
