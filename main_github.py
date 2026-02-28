@@ -1,41 +1,64 @@
 import asyncio
 import time
 import pandas as pd
+import concurrent.futures
+import random
 from data_fetcher import get_options_data
 from scanner import score_unusual
 from alerts import send_alert
-from historical_db import update_historical
 from historical_db import update_historical, is_alert_sent, mark_alert_sent, load_from_csv, save_to_csv
+from config import WATCHLIST_FILE, MAX_TICKERS
+
+def process_ticker(ticker):
+    """Worker function for parallel scanning."""
+    try:
+        # Small random delay (jitter) to avoid burst-pattern detection
+        time.sleep(random.uniform(0.5, 1.5))
+        
+        print(f"Scanning {ticker}...")
+        df, _ = get_options_data(ticker)
+        
+        # Save historical data
+        update_historical(ticker, df)
+        
+        # Check for whale trades
+        flags = score_unusual(df, ticker)
+        
+        trades_to_alert = []
+        for _, trade in flags.iterrows():
+            if not is_alert_sent(trade['contract']):
+                trades_to_alert.append(trade.to_dict())
+        
+        return ticker, trades_to_alert
+    except Exception as e:
+        print(f"Error on {ticker}: {e}")
+        return ticker, []
 
 async def scan_cycle():
     # 1. Load historical data into SQLite from CSV
     load_from_csv()
     
     watchlist = pd.read_csv(WATCHLIST_FILE)['ticker'].tolist()[:MAX_TICKERS]
-    for ticker in watchlist:
-        try:
-            print(f"Scanning {ticker}...")
-            df, _ = get_options_data(ticker)
-            update_historical(ticker, df)
-            flags = score_unusual(df, ticker)
-            for _, trade in flags.iterrows():
-                # Deduplication check
-                if is_alert_sent(trade['contract']):
-                    continue
-
-                print(f"Alert found for {ticker}!")
-                await send_alert(trade.to_dict())
-                mark_alert_sent(trade['contract'])
-
-            time.sleep(2)  # Delay to avoid rate limits
-
-        except Exception as e:
-            print(f"Error on {ticker}: {e}")
+    
+    print(f"Starting parallel scan for {len(watchlist)} tickers...")
+    
+    # 2. Run parallel scanning using ThreadPoolExecutor
+    # max_workers=5 is the 'Sweet Spot' for GitHub Actions to avoid 429s
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        results = list(executor.map(process_ticker, watchlist))
+    
+    # 3. Process results and send alerts sequentially (Telegram doesn't like spam)
+    for ticker, trades in results:
+        for trade in trades:
+            print(f"Alert found for {ticker}!")
+            await send_alert(trade)
+            mark_alert_sent(trade['contract'])
+            await asyncio.sleep(1) # Small delay between Telegram messages
             
-    # 2. Export updated database back to CSV
+    # 4. Export updated database back to CSV
     save_to_csv()
 
 if __name__ == "__main__":
-    print("Starting FlowGod Whale Tracker (GitHub Actions Mode)")
+    print("Starting FlowGod Whale Tracker (Parallel GitHub Actions Mode)")
     asyncio.run(scan_cycle())
     print("Scan complete.")
