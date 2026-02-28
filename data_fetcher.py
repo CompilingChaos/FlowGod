@@ -3,21 +3,24 @@ import pandas as pd
 import requests
 import time
 import logging
+import re
 from datetime import datetime
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 from config import CLOUDFLARE_PROXY_URL
 
 # --- Cloudflare Bridge Adapter ---
-# This intercepts all requests to Yahoo and sends them through your Worker
 class CloudflareAdapter(requests.adapters.HTTPAdapter):
     def __init__(self, proxy_url, *args, **kwargs):
         self.proxy_url = proxy_url.rstrip('/')
         super().__init__(*args, **kwargs)
 
     def send(self, request, **kwargs):
-        if "query1.finance.yahoo.com" in request.url:
-            # Replace the Yahoo hostname with your Cloudflare Worker URL
-            request.url = request.url.replace("https://query1.finance.yahoo.com", self.proxy_url)
+        # Support both query1 and query2 subdomains
+        if "finance.yahoo.com" in request.url:
+            original_url = request.url
+            # Match any queryX.finance.yahoo.com
+            request.url = re.sub(r'https://query\d\.finance\.yahoo\.com', self.proxy_url, request.url)
+            logging.debug(f"Bridging: {original_url} -> {request.url}")
         return super().send(request, **kwargs)
 
 # Setup the Session with the Bridge
@@ -28,8 +31,12 @@ session.headers.update({
 
 if CLOUDFLARE_PROXY_URL:
     adapter = CloudflareAdapter(CLOUDFLARE_PROXY_URL)
+    # Mount for both possible subdomains
     session.mount("https://query1.finance.yahoo.com", adapter)
-    logging.info(f"Cloudflare Bridge Active: {CLOUDFLARE_PROXY_URL}")
+    session.mount("https://query2.finance.yahoo.com", adapter)
+    logging.info(f"✅ Cloudflare Bridge ENABLED: {CLOUDFLARE_PROXY_URL}")
+else:
+    logging.error("❌ Cloudflare Bridge DISABLED: CLOUDFLARE_PROXY_URL not found in environment!")
 # ---------------------------------
 
 def get_stock_info(ticker):
