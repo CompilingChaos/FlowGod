@@ -76,6 +76,28 @@ def get_intraday_aggression(ticker):
         return df
     except: return None
 
+def get_social_velocity(ticker):
+    """Calculates StockTwits message velocity (messages per minute)."""
+    try:
+        # StockTwits Unauthenticated API
+        url = f"https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        
+        response = requests.get(url, headers=headers, timeout=5)
+        data = response.json()
+        messages = data.get('messages', [])
+        
+        if len(messages) < 5: return 0.0
+        
+        # Velocity = Count / TimeDelta
+        t_newest = pd.to_datetime(messages[0]['created_at'])
+        t_oldest = pd.to_datetime(messages[-1]['created_at'])
+        diff_mins = max((t_newest - t_oldest).total_seconds() / 60.0, 1.0)
+        
+        return round(len(messages) / diff_mins, 2)
+    except:
+        return 0.0
+
 def get_stock_info(ticker):
     try:
         stock = yf.Ticker(ticker)

@@ -57,12 +57,8 @@ def map_gex_walls(df):
     except: return 0, 0, 0
 
 def calculate_hvn_conviction(df_1m, t_type, spot):
-    """
-    Tier-3 Lie Detector: Verifies if the stock cleared the High Volume Node (HVN).
-    """
     if df_1m is None or len(df_1m) < 20: return 1.0, "N/A"
     try:
-        # Day's Point of Control (POC)
         price_bins = np.round(df_1m['Close'] * 10) / 10
         hvn_price = df_1m.groupby(price_bins)['Volume'].sum().idxmax()
         conviction, label = 1.0, "POC Cleansed"
@@ -91,9 +87,17 @@ def classify_aggression(last_price, bid, ask):
     if last_price <= bid and bid > 0: return "Passive (Bid)", 0
     return "Neutral (Mid)", 10
 
-def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None):
+def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_vel=0.0):
     if df.empty: return pd.DataFrame()
     skew, contango, vol_bias = calculate_volatility_surface(df)
+    
+    baseline = get_ticker_baseline(ticker)
+    trust_mult = baseline.get('trust_score', 1.0) if baseline else 1.0
+    
+    # Tier-3 Sentiment Fusion
+    avg_social = baseline.get('avg_social_vel', 0.0) if baseline else 0.0
+    hype_z = (social_vel / (avg_social + 0.1)) if avg_social > 0 else 0.0
+
     for idx, row in df.iterrows():
         T = max(0.001, row['dte']) / 365.0
         d, g, v, c = calculate_greeks(row['underlying_price'], row['strike'], T, 0.045, row['impliedVolatility'], row['side'])
@@ -101,16 +105,11 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None):
         df.at[idx, 'gex'] = g * row['openInterest'] * 100 * row['underlying_price']
     call_wall, put_wall, flip = map_gex_walls(df)
     spot = df.iloc[0]['underlying_price']
-    
     trv_label, trv_bonus = calculate_trv_aggression(candle_df, ticker)
-    baseline = get_ticker_baseline(ticker)
-    trust_mult = baseline.get('trust_score', 1.0) if baseline else 1.0
     results = []
-
     for _, row in df.iterrows():
         agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
         hvn_conv, hvn_label = calculate_hvn_conviction(candle_df, row['side'].upper(), spot)
-        
         score = 0
         if row['volume'] > 1000: score += 20
         if row['notional'] > 500000: score += 40
@@ -118,7 +117,7 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None):
         if abs(spot - call_wall) / spot < 0.01: score -= 30
         if (vol_bias == "BULLISH" and row['side'] == 'calls') or (vol_bias == "BEARISH" and row['side'] == 'puts'): score += 40
         
-        # FINAL SCORING WITH HVN CONVICTION
+        # FINAL SCORING
         score = int(score * trust_mult * hvn_conv)
         
         if (row['volume'] > row['openInterest'] and row['volume'] > 500) or score >= 85:
@@ -131,6 +130,7 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None):
                 'gex': int(row['gex']), 'call_wall': call_wall, 'put_wall': put_wall, 'flip': flip,
                 'skew': skew, 'bias': vol_bias, 'score': score, 'aggression': f"{agg_label} | {trv_label} | {hvn_label}",
                 'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
+                'hype_z': round(hype_z, 1),
                 'detection_reason': f"Score {score} | {hvn_label} | {vol_bias}"
             })
     return pd.DataFrame(results)

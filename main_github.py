@@ -4,7 +4,7 @@ import pandas as pd
 import random
 import logging
 import re
-from data_fetcher import get_stock_info, get_option_chain_data, get_advanced_macro, get_contract_oi, get_sector_etf_performance, get_intraday_aggression
+from data_fetcher import get_stock_info, get_option_chain_data, get_advanced_macro, get_contract_oi, get_sector_etf_performance, get_intraday_aggression, get_social_velocity
 from scanner import score_unusual, get_stock_heat, process_results
 from alerts import send_alert, send_confirmation_alert
 from historical_db import (
@@ -35,9 +35,14 @@ async def process_ticker_sequential(ticker, sector_from_csv):
         df = get_option_chain_data(ticker, price, stock_vol, full_chain=True)
         if df.empty: return []
 
+        # Tier-3: Social Sentiment Fusion
+        social_vel = get_social_velocity(ticker)
+
         update_historical(ticker, df)
         context = get_ticker_context(ticker, days=2)
-        flags = score_unusual(df, ticker, stock_z, sector, candle)
+
+        # Scorer now handles Surface, GEX Walls, TRV, and Social Hype
+        flags = score_unusual(df, ticker, stock_z, sector, candle, social_vel)
 
         trades_to_alert = []
         for _, trade in flags.iterrows():

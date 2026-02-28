@@ -8,11 +8,11 @@ from google import genai
 from historical_db import get_rag_context
 from scanner import generate_system_verdict
 
-# Modern Google GenAI Client
 def get_ai_summary(trade, ticker_context="", macro_context=None):
-    if not GEMINI_API_KEY: return None
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if not gemini_key: return None
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        client = genai.Client(api_key=gemini_key)
         m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Neutral"}
         macro_str = f"Market: {m['sentiment']} (SPY: {m['spy']}%, DXY: {m['dxy']}%, TNX: {m['tnx']}%)"
         rag_context = get_rag_context(trade['ticker'], trade['type'])
@@ -24,6 +24,9 @@ TICKER: {trade['ticker']} {trade['type']} {trade['strike']} | Exp: {trade['exp']
 {macro_str}
 {rag_context}
 
+SOCIAL SENTIMENT:
+Hype Z-Score: {trade.get('hype_z', 0)} (High = Loud Retail FOMO, Low = Quiet Institutional Alpha)
+
 SYSTEM VERDICT: {sys_verdict}
 SYSTEM LOGIC: {sys_logic}
 
@@ -34,8 +37,8 @@ Volatility: Skew is {trade['skew']} ({trade['bias']} bias)
 Technicals: Call Wall: ${trade['call_wall']} | Put Wall: ${trade['put_wall']} | Flip: ${trade['flip']}
 
 AI INSTRUCTIONS:
-1. Validate the SYSTEM VERDICT and suggest a Trade Republic compatible action (BUY, CALL, or PUT).
-2. ESTIMATE DURATION: How many days/weeks until this trade likely reaches its profit target based on DTE and GEX?
+1. Differentiate between quiet alpha and loud FOMO based on Hype Z-Score.
+2. Validate the SYSTEM VERDICT for Trade Republic (BUY, CALL, or PUT).
 3. Respond ONLY with JSON.
 
 RESPONSE SCHEMA:
@@ -43,7 +46,7 @@ RESPONSE SCHEMA:
   "is_unusual": boolean,
   "confidence_score": integer,
   "final_verdict": "BUY" | "CALL" | "PUT" | "NEUTRAL",
-  "estimated_duration": "string (e.g. 2-5 days)",
+  "estimated_duration": "string",
   "verdict_reasoning": "...",
   "category": "...",
   "analysis": "..."
@@ -60,7 +63,6 @@ async def send_alert(trade, ticker_context="", macro_context=None):
     ai = get_ai_summary(trade, ticker_context, macro_context)
     if ai and not ai.get("is_unusual", True): return False
     
-    m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Neutral"}
     bot = Bot(token=TELEGRAM_TOKEN)
     stars = "⭐" * (ai['confidence_score'] // 20) if ai and 'confidence_score' in ai else "N/A"
     
@@ -71,8 +73,8 @@ async def send_alert(trade, ticker_context="", macro_context=None):
 {stars} (Conviction: {ai['confidence_score'] if ai and 'confidence_score' in ai else '??'}%)
 
 🏁 VERDICT: {final_v}
-⏳ EST. DURATION: {ai['estimated_duration'] if ai else 'Unknown'}
-Reasoning: {ai['verdict_reasoning'] if ai else sys_l}
+⏳ EST. DURATION: {ai['estimated_duration'] if ai and 'estimated_duration' in ai else 'Unknown'}
+Reasoning: {ai['verdict_reasoning'] if ai and 'verdict_reasoning' in ai else sys_l}
 
 📊 TRADE DETAILS:
 Type: {trade['type']} {trade['strike']} | Exp: {trade['exp']}
@@ -84,13 +86,13 @@ GEX Pressure: ${trade['gex']:,}
 Call Wall: ${trade['call_wall']} | Put Wall: ${trade['put_wall']}
 Gamma Flip: ${trade['flip']}
 
+💬 SOCIAL SENTIMENT:
+Hype Z-Score: {trade.get('hype_z', 0)} ({'LOUD/FOMO' if trade.get('hype_z',0) > 2 else 'QUIET/ALPHA'})
+
 🧠 AI ANALYST:
 Category: {ai['category'] if ai and 'category' in ai else 'Unknown'}
 Analysis: {ai['analysis'] if ai and 'analysis' in ai else 'N/A'}"""
 
-    # Add "Save Trade" button (Native Callback)
-    # We store the core data in the callback string
-    # Format: save|TICKER|TYPE|STRIKE|PRICE
     cb_data = f"save|{trade['ticker']}|{trade['type']}|{trade['strike']}|{trade['underlying_price']}"
     keyboard = [[InlineKeyboardButton("💾 SAVE TRADE", callback_data=cb_data)]]
     reply_markup = InlineKeyboardMarkup(keyboard)
