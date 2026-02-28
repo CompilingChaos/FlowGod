@@ -3,6 +3,7 @@ import time
 import pandas as pd
 import concurrent.futures
 import random
+import logging
 from data_fetcher import get_options_data
 from scanner import score_unusual
 from alerts import send_alert
@@ -15,7 +16,7 @@ def process_ticker(ticker):
         # Small random delay (jitter) to avoid burst-pattern detection
         time.sleep(random.uniform(0.5, 1.5))
         
-        print(f"Scanning {ticker}...")
+        logging.info(f"Scanning {ticker}...")
         df, _ = get_options_data(ticker)
         
         # Save historical data
@@ -31,7 +32,7 @@ def process_ticker(ticker):
         
         return ticker, trades_to_alert
     except Exception as e:
-        print(f"Error on {ticker}: {e}")
+        logging.error(f"Error on {ticker}: {e}")
         return ticker, []
 
 async def scan_cycle():
@@ -40,17 +41,16 @@ async def scan_cycle():
     
     watchlist = pd.read_csv(WATCHLIST_FILE)['ticker'].tolist()[:MAX_TICKERS]
     
-    print(f"Starting parallel scan for {len(watchlist)} tickers...")
+    logging.info(f"Starting parallel scan for {len(watchlist)} tickers...")
     
     # 2. Run parallel scanning using ThreadPoolExecutor
-    # max_workers=5 is the 'Sweet Spot' for GitHub Actions to avoid 429s
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         results = list(executor.map(process_ticker, watchlist))
     
-    # 3. Process results and send alerts sequentially (Telegram doesn't like spam)
+    # 3. Process results and send alerts sequentially
     for ticker, trades in results:
         for trade in trades:
-            print(f"Alert found for {ticker}!")
+            logging.info(f"Alert found for {ticker}!")
             await send_alert(trade)
             mark_alert_sent(trade['contract'])
             await asyncio.sleep(1) # Small delay between Telegram messages
@@ -59,6 +59,6 @@ async def scan_cycle():
     save_to_csv()
 
 if __name__ == "__main__":
-    print("Starting FlowGod Whale Tracker (Parallel GitHub Actions Mode)")
+    logging.info("Starting FlowGod Whale Tracker (Parallel GitHub Actions Mode)")
     asyncio.run(scan_cycle())
-    print("Scan complete.")
+    logging.info("Scan complete.")

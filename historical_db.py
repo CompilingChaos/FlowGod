@@ -2,40 +2,50 @@ import sqlite3
 import pandas as pd
 import os
 import math
+import logging
 from datetime import datetime, timedelta
 from config import DB_FILE
 
 HISTORICAL_CSV = "historical_data.csv"
 
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.execute('''CREATE TABLE IF NOT EXISTS hist_vol_oi 
-                 (ticker TEXT, contract TEXT, date TEXT, volume INTEGER, oi INTEGER)''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS alerts_sent 
-                 (contract TEXT PRIMARY KEY, timestamp TEXT)''')
-    conn.commit()
-    return conn
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute('''CREATE TABLE IF NOT EXISTS hist_vol_oi 
+                     (ticker TEXT, contract TEXT, date TEXT, volume INTEGER, oi INTEGER)''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS alerts_sent 
+                     (contract TEXT PRIMARY KEY, timestamp TEXT)''')
+        conn.commit()
+        return conn
+    except Exception as e:
+        logging.error(f"DB Init Error: {e}")
+        return None
 
 def load_from_csv():
     if os.path.exists(HISTORICAL_CSV):
         try:
             df = pd.read_csv(HISTORICAL_CSV)
             conn = init_db()
-            df.to_sql('hist_vol_oi', conn, if_exists='replace', index=False)
+            if conn:
+                df.to_sql('hist_vol_oi', conn, if_exists='replace', index=False)
+                logging.info(f"Loaded {len(df)} historical records.")
         except Exception as e:
-            print(f"Error loading CSV: {e}")
+            logging.error(f"Error loading CSV: {e}")
 
 def save_to_csv():
     conn = init_db()
+    if not conn: return
     try:
         cutoff = (datetime.now() - timedelta(days=60)).date().isoformat()
         df = pd.read_sql_query("SELECT * FROM hist_vol_oi WHERE date >= ?", conn, params=(cutoff,))
         df.to_csv(HISTORICAL_CSV, index=False)
+        logging.info(f"Saved {len(df)} historical records.")
     except Exception as e:
-        print(f"Error saving CSV: {e}")
+        logging.error(f"Error saving CSV: {e}")
 
 def update_historical(ticker, chain_df):
     conn = init_db()
+    if not conn: return
     today = datetime.now().date().isoformat()
     for _, row in chain_df.iterrows():
         contract = row['contractSymbol']
@@ -46,11 +56,9 @@ def update_historical(ticker, chain_df):
     conn.commit()
 
 def get_stats(ticker, contract, days=30):
-    """Returns avg volume, avg oi, and volume standard deviation."""
     conn = init_db()
+    if not conn: return {'avg_vol': 0, 'avg_oi': 0, 'std_dev': 0}
     cutoff = (datetime.now() - timedelta(days=days)).date().isoformat()
-    
-    # SQLite math: variance = avg(x^2) - avg(x)^2
     query = """
         SELECT 
             AVG(volume) as avg_vol, 
@@ -59,21 +67,20 @@ def get_stats(ticker, contract, days=30):
         FROM hist_vol_oi 
         WHERE ticker=? AND contract=? AND date >= ?
     """
-    df = pd.read_sql_query(query, conn, params=(ticker, contract, cutoff))
-    
-    if df.empty or df.iloc[0]['avg_vol'] is None:
+    try:
+        df = pd.read_sql_query(query, conn, params=(ticker, contract, cutoff))
+        if df.empty or df.iloc[0]['avg_vol'] is None:
+            return {'avg_vol': 0, 'avg_oi': 0, 'std_dev': 0}
+        row = df.iloc[0]
+        std_dev = math.sqrt(max(0, row['variance']))
+        return {'avg_vol': row['avg_vol'], 'avg_oi': row['avg_oi'], 'std_dev': std_dev}
+    except Exception as e:
+        logging.error(f"Stats query failed for {ticker}: {e}")
         return {'avg_vol': 0, 'avg_oi': 0, 'std_dev': 0}
-        
-    row = df.iloc[0]
-    std_dev = math.sqrt(max(0, row['variance']))
-    return {
-        'avg_vol': row['avg_vol'],
-        'avg_oi': row['avg_oi'],
-        'std_dev': std_dev
-    }
 
 def is_alert_sent(contract):
     conn = init_db()
+    if not conn: return False
     cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
     conn.execute("DELETE FROM alerts_sent WHERE timestamp < ?", (cutoff,))
     conn.commit()
@@ -82,6 +89,7 @@ def is_alert_sent(contract):
 
 def mark_alert_sent(contract):
     conn = init_db()
+    if not conn: return
     conn.execute("INSERT OR REPLACE INTO alerts_sent (contract, timestamp) VALUES (?, ?)",
                  (contract, datetime.now().isoformat()))
     conn.commit()
