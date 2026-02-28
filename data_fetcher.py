@@ -9,7 +9,6 @@ from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_excep
 from config import CLOUDFLARE_PROXY_URL
 
 # --- Cloudflare Bridge Monkey Patch ---
-# This forces yfinance (and all other requests) to route through your Worker
 if CLOUDFLARE_PROXY_URL:
     original_request = requests.Session.request
     proxy_url = CLOUDFLARE_PROXY_URL.rstrip('/')
@@ -25,38 +24,39 @@ if CLOUDFLARE_PROXY_URL:
     logging.info(f"✅ Cloudflare Bridge Patched: {proxy_url}")
 else:
     logging.error("❌ Cloudflare Bridge DISABLED: CLOUDFLARE_PROXY_URL missing!")
-# ---------------------------------------
 
 def get_advanced_macro():
-    """Fetches global macro context (SPY, VIX, DXY, TNX) for institutional analysis."""
+    """Fetches global macro context (SPY, VIX, DXY, TNX, QQQ) for institutional analysis."""
     try:
-        # Use Ticker objects to leverage the existing Cloudflare bridge patch
         spy = yf.Ticker("SPY")
         vix = yf.Ticker("^VIX")
-        dxy = yf.Ticker("DX-Y.NYB") # US Dollar Index
-        tnx = yf.Ticker("^TNX")      # 10Y Treasury Yield
+        dxy = yf.Ticker("DX-Y.NYB")
+        tnx = yf.Ticker("^TNX")
+        qqq = yf.Ticker("QQQ")
         
         spy_pc = spy.fast_info.get('day_change_percent', 0)
         vix_pc = vix.fast_info.get('day_change_percent', 0)
         dxy_pc = dxy.fast_info.get('day_change_percent', 0)
         tnx_pc = tnx.fast_info.get('day_change_percent', 0)
+        qqq_pc = qqq.fast_info.get('day_change_percent', 0)
         
         sentiment = "Neutral"
         if spy_pc < -1.0 and vix_pc > 5.0: sentiment = "Fearful / Risk-Off"
         if spy_pc > 0.5 and vix_pc < -3.0: sentiment = "Bullish / Risk-On"
         if dxy_pc > 0.5: sentiment += " | Liquidity Squeeze (DXY Up)"
-        if tnx_pc > 1.0: sentiment += " | Yield Pressure (TNX Up)"
+        if tnx_pc > 1.0: sentiment += " | Tech Pressure (TNX Up)"
         
         return {
             'spy': round(spy_pc, 2),
             'vix': round(vix_pc, 2),
             'dxy': round(dxy_pc, 2),
             'tnx': round(tnx_pc, 2),
+            'qqq': round(qqq_pc, 2),
             'sentiment': sentiment
         }
     except Exception as e:
         logging.error(f"Advanced macro fetch failed: {e}")
-        return {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'sentiment': "Unknown"}
+        return {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Unknown"}
 
 def get_sector_etf_performance():
     """Fetches performance of key sector ETFs for baselining."""
@@ -79,46 +79,27 @@ def get_sector_etf_performance():
     return performance
 
 def get_intraday_aggression(ticker):
-    """
-    Analyzes 1m price action vs VWAP to verify institutional 'Sweep' conviction.
-    """
+    """Analyzes 1m price action and returns metrics for TRV calculation."""
     try:
-        # Fetch 1m intraday data for the current day
         df = yf.download(ticker, period="1d", interval="1m", progress=False)
         if df.empty or len(df) < 10:
-            return "Unknown (Low Liquidity)", 0
-
-        # Calculate Intraday VWAP
+            return None
         df['Typical_Price'] = (df['High'] + df['Low'] + df['Close']) / 3
         df['Cumulative_Vol'] = df['Volume'].cumsum()
         df['Cumulative_Vol_Price'] = (df['Typical_Price'] * df['Volume']).cumsum()
         df['VWAP'] = df['Cumulative_Vol_Price'] / df['Cumulative_Vol']
-
-        # Analyze the last 5 minutes (proxy for the trade execution window)
-        recent = df.tail(5)
-        # Price velocity (Change over 5 mins)
-        price_change = (recent['Close'].iloc[-1] - recent['Open'].iloc[0]) / recent['Open'].iloc[0]
-        # VWAP Divergence (Is price pushing significantly away from the mean?)
-        vwap_div = (recent['Close'].iloc[-1] - recent['VWAP'].iloc[-1]) / recent['VWAP'].iloc[-1]
-
-        # BULLISH SWEEP: Stock price surging and ripping above VWAP
-        if price_change > 0.0015 and vwap_div > 0.001:
-            return "Institutional Sweep (Uptick Aggression)", 40
         
-        # BEARISH SWEEP: Stock price dumping and breaking below VWAP
-        if price_change < -0.0015 and vwap_div < -0.001:
-            return "Institutional Sweep (Downside Aggression)", 40
-
-        # If price is flat or hugging VWAP, it was likely a passive block
-        return "Passive Block / Hedging", 5
+        candle = df.iloc[-1].to_dict()
+        candle['vwap'] = df['VWAP'].iloc[-1]
+        candle['prev_close'] = df['Close'].iloc[-2]
+        return candle
     except Exception as e:
-        logging.error(f"Intraday aggression check failed for {ticker}: {e}")
-        return "Unknown", 0
+        logging.error(f"Intraday fetch failed for {ticker}: {e}")
+        return None
 
 def get_stock_info(ticker):
     """Fetches just the stock price and volume (Fast/Light)."""
     try:
-        # We let yfinance handle its own session now, our patch will catch it
         stock = yf.Ticker(ticker)
         info = stock.fast_info
         return {
@@ -139,13 +120,10 @@ def get_option_chain_data(ticker, price, stock_vol):
     """Fetches the heavy option chains only for hot stocks."""
     stock = yf.Ticker(ticker)
     all_data = []
-    
     try:
         options = list(stock.options)
         if not options:
             return pd.DataFrame()
-
-        # Scan only next 5 expirations (most whale activity) to save API calls
         for exp in options[:5]:
             chain = stock.option_chain(exp)
             for side_name, side in [("calls", chain.calls), ("puts", chain.puts)]:
@@ -160,36 +138,24 @@ def get_option_chain_data(ticker, price, stock_vol):
                 side['underlying_price'] = price
                 side['underlying_vol'] = stock_vol
                 side['moneyness'] = abs(side['strike'] - price) / price * 100 if price > 0 else 0
-                # Preserve bid/ask for sweep detection
                 side['bid'] = side['bid']
                 side['ask'] = side['ask']
                 all_data.append(side)
-            
-            # Small delay between expirations to avoid burst blocking
             time.sleep(0.5)
-            
     except Exception as e:
         logging.error(f"Option chain fetch failed for {ticker}: {e}")
-
     df = pd.concat(all_data) if all_data else pd.DataFrame()
     return df
 
 def get_contract_oi(contract_symbol):
     """Fetches the current open interest for a specific contract symbol."""
     try:
-        # Extract ticker from symbol (e.g. AAPL240621C00150000 -> AAPL)
         ticker_match = re.match(r'^([A-Z]+)', contract_symbol)
         if not ticker_match: return 0
         ticker = ticker_match.group(1)
-        
         stock = yf.Ticker(ticker)
-        # This is slightly heavy but necessary for OI verification
-        # We find the expiration date from the symbol
-        # Format: Ticker (1-6) + YYMMDD (6) + C/P (1) + Strike (8)
-        # We'll just try to fetch all expirations and find the match
         for exp in stock.options[:10]:
             chain = stock.option_chain(exp)
-            # Check calls and puts
             for side in [chain.calls, chain.puts]:
                 match = side[side['contractSymbol'] == contract_symbol]
                 if not match.empty:

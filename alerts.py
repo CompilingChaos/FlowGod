@@ -16,9 +16,8 @@ def get_ai_summary(trade, ticker_context="", macro_context=None):
         genai.configure(api_key=gemini_key)
         model = genai.GenerativeModel("gemini-3-flash")
         
-        # Format Macro Context
-        m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'sentiment': "Neutral"}
-        macro_str = f"Market: {m['sentiment']} (SPY: {m['spy']}%, VIX: {m['vix']}%, DXY: {m['dxy']}%, TNX: {m['tnx']}%)"
+        m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Neutral"}
+        macro_str = f"Market: {m['sentiment']} (SPY: {m['spy']}%, VIX: {m['vix']}%, DXY: {m['dxy']}%, TNX: {m['tnx']}%, QQQ: {m['qqq']}%)"
 
         prompt = f"""As an institutional options flow analyst, evaluate this trade using the STRICT SCORING RUBRIC below.
 
@@ -26,11 +25,11 @@ TICKER DATA:
 {trade['ticker']} {trade['type']} {trade['strike']} exp {trade['exp']} 
 Volume: {trade['volume']} (vs normal {trade['rel_vol']}x)
 Stock Heat (Z-Score): {trade['stock_z']}
-Aggression: {trade['aggression']} (Price: ${trade['premium']} vs Bid: ${trade['bid']} / Ask: ${trade['ask']})
-Delta: {trade['delta']} | Gamma: {trade['gamma']} | GEX: ${trade['gex']:,}
+Aggression: {trade['aggression']}
+Delta: {trade['delta']} | Gamma: {trade['gamma']} | Vanna: {trade['vanna']} | Charm: {trade['charm']}
+GEX (Dealer Hedge): ${trade['gex']:,} | Gamma Flip Level: ${trade['flip']}
 Notional Value: ${trade['notional']:,}
-Option Z-Score: {trade['z_score']}
-IV: {trade['iv']*100:.1f}%
+Option Z-Score: {trade['z_score']} | IV: {trade['iv']*100:.1f}%
 
 MACRO ENVIRONMENT:
 {macro_str}
@@ -41,19 +40,19 @@ HISTORICAL TICKER CONTEXT:
 SCORING RUBRIC (Each category is 0-20 points):
 1. SIZE: 20pts if notional > $500k, 10pts if > $100k.
 2. VOL/OI: 20pts if Vol > OI, 10pts if Vol > 0.5*OI.
-3. AGGRESSION: 20pts if 'Sweep/Ask', 10pts if above mid-point.
-4. MACRO ALIGNMENT: 20pts if trade direction matches divergence (e.g. Bullish while DXY/TNX dropping).
-5. GREEKS/URGENCY: 20pts if High Gamma (>0.05) or ATM Delta (0.45-0.55).
+3. AGGRESSION: 20pts if contains 'TRV Max' or 'Ask', 10pts if above mid-point.
+4. MACRO/HEDGING: 20pts if Vanna/Charm indicate dealer buy-pressure or macro divergence.
+5. TECHNICALS: 20pts if trade is near the Gamma Flip Level (${trade['flip']}).
 
 RESPONSE SCHEMA (JSON ONLY):
 {{
   "is_unusual": boolean,
   "confidence_score": integer (Sum of the 5 rubric points, 0-100),
-  "rubric_breakdown": {{ "size": int, "vol_oi": int, "aggression": int, "macro": int, "greeks": int }},
+  "rubric_breakdown": {{ "size": int, "vol_oi": int, "aggression": int, "macro_hedge": int, "technicals": int }},
   "sentiment": "BULLISH" | "BEARISH" | "NEUTRAL",
   "category": "Aggressive Accumulation" | "Strategic Hedge" | "Speculative Lottery" | "Routine Flow",
-  "analysis": "Standard institutional sentence",
-  "divergence": "Describe any macro/stock divergence (e.g. Gamma Squeeze potential)"
+  "analysis": "Institutional summary of intent",
+  "divergence": "Describe any macro/sector divergence"
 }}"""
 
         response = model.generate_content(prompt)
@@ -70,17 +69,14 @@ RESPONSE SCHEMA (JSON ONLY):
             
         return data
     except Exception as e:
-        logging.error(f"Gemini Rubric failed: {e}")
+        logging.error(f"Gemini Alpha Suite failed: {e}")
         return None
 
 async def send_alert(trade, ticker_context="", macro_context=None):
-    """Sends detailed structured alert with Greeks."""
     ai = get_ai_summary(trade, ticker_context, macro_context)
-    
-    if ai == "SKIP_ALERT":
-        return False 
+    if ai == "SKIP_ALERT": return False 
         
-    m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'sentiment': "Neutral"}
+    m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Neutral"}
     bot = Bot(token=TELEGRAM_TOKEN)
     
     stars = "⭐" * (ai['confidence_score'] // 20) if ai else "N/A"
@@ -91,31 +87,31 @@ async def send_alert(trade, ticker_context="", macro_context=None):
 
 📊 TRADE DETAILS:
 Type: {trade['type']} {trade['strike']} | Exp: {trade['exp']}
-Aggression: {trade['aggression']}
+Agg: {trade['aggression']}
 Vol: {trade['volume']:,} | Notional: ${trade['notional']:,}
-Premium: ${trade['premium']} | IV: {trade['iv']*100:.1f}%
+IV: {trade['iv']*100:.1f}%
 
-📐 GREEKS & PRESSURE:
+📐 ADVANCED GREEKS:
 Delta: {trade['delta']} | Gamma: {trade['gamma']}
-GEX (Dealer Hedge): ${trade['gex']:,}
+Vanna: {trade['vanna']} | Charm: {trade['charm']}
+GEX Pressure: ${trade['gex']:,}
+Gamma Flip: ${trade['flip']}
 
 🔥 HEAT SCORING:
-Whale Score: {trade['score']}
-Option Z: {trade['z_score']} | RelVol: {trade['rel_vol']}x
+Whale Score: {trade['score']} | Trust: {trade['rel_vol']}x
 Stock Heat Z: {trade['stock_z']}
 
-🌍 MACRO & CONTEXT:
+🌍 MACRO & RS:
 Macro: {m['sentiment']}
-DXY: {m['dxy']}% | TNX: {m['tnx']}%
+DXY: {m['dxy']}% | TNX: {m['tnx']}% | QQQ: {m['qqq']}%
 {ticker_context}
 
-🧠 AI ANALYST (Rubric Breakdown):
+🧠 AI ANALYST (Rubric):
 Size: {rb.get('size',0)} | Vol/OI: {rb.get('vol_oi',0)} | Agg: {rb.get('aggression',0)}
-Macro: {rb.get('macro',0)} | Greeks: {rb.get('greeks',0)}
+Hedge: {rb.get('macro_hedge',0)} | Tech: {rb.get('technicals',0)}
 
 Category: {ai['category'] if ai else 'Unknown'}
-Analysis: {ai['analysis'] if ai else 'N/A'}
-Divergence: {ai['divergence'] if ai else 'None.'}"""
+Analysis: {ai['analysis'] if ai else 'N/A'}"""
 
     try:
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
@@ -125,14 +121,12 @@ Divergence: {ai['divergence'] if ai else 'None.'}"""
         return False
 
 async def send_confirmation_alert(ticker, contract, oi_change, percentage):
-    """Sends a confirmation alert when a whale holds a position overnight."""
     bot = Bot(token=TELEGRAM_TOKEN)
     msg = f"""✅ WHALE CONFIRMED: {ticker} ✅
 The institutional position on {contract} was HELD overnight.
 
 📈 OI Change: +{oi_change:,} contracts
-🔥 Stickiness: {percentage:.1f}% of yesterday's volume held.
-Trust score for {ticker} has been increased."""
+🔥 Stickiness: {percentage:.1f}% of yesterday's volume held."""
 
     try:
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)

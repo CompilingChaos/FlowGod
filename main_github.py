@@ -30,24 +30,24 @@ async def process_ticker_sequential(ticker):
         stock_z, sector = get_stock_heat(ticker, stock_vol)
         is_hot = stock_z > 1.0 
         always_scan = ticker in ['SPY', 'QQQ', 'TSLA', 'NVDA', 'AAPL']
-        
+
         if not is_hot and not always_scan:
             return []
-logging.info(f"Ticker {ticker} is HOT (Z: {stock_z:.1f}). Fetching options...")
 
-# VECTOR 1: Verify conviction with intraday VWAP divergence
-intraday_agg = get_intraday_aggression(ticker)
+        logging.info(f"Ticker {ticker} is HOT (Z: {stock_z:.1f}). Fetching options...")
 
-df = get_option_chain_data(ticker, price, stock_vol)
+        # VECTOR 1: Verify conviction with TRV and VWAP
+        candle = get_intraday_aggression(ticker)
 
-if df.empty:
-    return []
+        df = get_option_chain_data(ticker, price, stock_vol)
+        if df.empty: return []
 
-update_historical(ticker, df)
-context = get_ticker_context(ticker, days=2)
+        update_historical(ticker, df)
+        context = get_ticker_context(ticker, days=2)
 
-# Check for whale trades with intraday aggression context
-flags = score_unusual(df, ticker, stock_z, sector, intraday_agg)
+        # Check for whale trades with full alpha context
+        flags = score_unusual(df, ticker, stock_z, sector, candle)
+
 
         trades_to_alert = []
         for _, trade in flags.iterrows():
