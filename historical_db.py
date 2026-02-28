@@ -16,10 +16,11 @@ def init_db():
                      (ticker TEXT, contract TEXT, date TEXT, volume INTEGER, oi INTEGER)''')
         # Alert Tracking
         conn.execute('''CREATE TABLE IF NOT EXISTS alerts_sent 
-                     (contract TEXT PRIMARY KEY, timestamp TEXT)''')
-        # Stock Baselines (Massive.com)
+                     (contract TEXT PRIMARY KEY, timestamp TEXT, confirmed INTEGER DEFAULT 0)''')
+        # Stock Baselines
         conn.execute('''CREATE TABLE IF NOT EXISTS ticker_stats 
-                     (ticker TEXT PRIMARY KEY, avg_vol REAL, std_dev REAL, sector TEXT, last_updated TEXT)''')
+                     (ticker TEXT PRIMARY KEY, avg_vol REAL, std_dev REAL, sector TEXT, 
+                      trust_score REAL DEFAULT 1.0, last_updated TEXT)''')
         conn.commit()
         return conn
     except Exception as e:
@@ -30,8 +31,14 @@ def update_ticker_baseline(ticker, avg_vol, std_dev, sector="Unknown"):
     conn = init_db()
     if not conn: return
     try:
-        conn.execute("INSERT OR REPLACE INTO ticker_stats (ticker, avg_vol, std_dev, sector, last_updated) VALUES (?, ?, ?, ?, ?)",
-                     (ticker, avg_vol, std_dev, sector, datetime.now().isoformat()))
+        # Preserve trust_score on update
+        res = conn.execute("SELECT trust_score FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
+        current_trust = res[0] if res else 1.0
+        
+        conn.execute("""INSERT OR REPLACE INTO ticker_stats 
+                     (ticker, avg_vol, std_dev, sector, trust_score, last_updated) 
+                     VALUES (?, ?, ?, ?, ?, ?)""",
+                     (ticker, avg_vol, std_dev, sector, current_trust, datetime.now().isoformat()))
         conn.commit()
     finally:
         conn.close()
@@ -40,10 +47,42 @@ def get_ticker_baseline(ticker):
     conn = init_db()
     if not conn: return None
     try:
-        res = conn.execute("SELECT avg_vol, std_dev, sector FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
+        res = conn.execute("SELECT avg_vol, std_dev, sector, trust_score FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
         if res:
-            return {'avg_vol': res[0], 'std_dev': res[1], 'sector': res[2]}
+            return {'avg_vol': res[0], 'std_dev': res[1], 'sector': res[2], 'trust_score': res[3]}
         return None
+    finally:
+        conn.close()
+
+def update_trust_score(ticker, change):
+    conn = init_db()
+    if not conn: return
+    try:
+        conn.execute("UPDATE ticker_stats SET trust_score = trust_score + ? WHERE ticker = ?", (change, ticker))
+        # Clamp trust score between 0.5 and 2.0
+        conn.execute("UPDATE ticker_stats SET trust_score = 2.0 WHERE trust_score > 2.0")
+        conn.execute("UPDATE ticker_stats SET trust_score = 0.5 WHERE trust_score < 0.5")
+        conn.commit()
+    finally:
+        conn.close()
+
+def get_unconfirmed_alerts():
+    conn = init_db()
+    if not conn: return []
+    try:
+        # Get alerts from the last 48 hours that haven't been confirmed
+        cutoff = (datetime.now() - timedelta(hours=48)).isoformat()
+        res = conn.execute("SELECT contract, timestamp FROM alerts_sent WHERE confirmed = 0 AND timestamp > ?", (cutoff,)).fetchall()
+        return res
+    finally:
+        conn.close()
+
+def mark_alert_confirmed(contract, status=1):
+    conn = init_db()
+    if not conn: return
+    try:
+        conn.execute("UPDATE alerts_sent SET confirmed = ? WHERE contract = ?", (status, contract))
+        conn.commit()
     finally:
         conn.close()
 

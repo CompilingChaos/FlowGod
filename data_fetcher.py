@@ -108,3 +108,28 @@ def get_option_chain_data(ticker, price, stock_vol):
 
     df = pd.concat(all_data) if all_data else pd.DataFrame()
     return df
+
+def get_contract_oi(contract_symbol):
+    """Fetches the current open interest for a specific contract symbol."""
+    try:
+        # Extract ticker from symbol (e.g. AAPL240621C00150000 -> AAPL)
+        ticker_match = re.match(r'^([A-Z]+)', contract_symbol)
+        if not ticker_match: return 0
+        ticker = ticker_match.group(1)
+        
+        stock = yf.Ticker(ticker)
+        # This is slightly heavy but necessary for OI verification
+        # We find the expiration date from the symbol
+        # Format: Ticker (1-6) + YYMMDD (6) + C/P (1) + Strike (8)
+        # We'll just try to fetch all expirations and find the match
+        for exp in stock.options[:10]:
+            chain = stock.option_chain(exp)
+            # Check calls and puts
+            for side in [chain.calls, chain.puts]:
+                match = side[side['contractSymbol'] == contract_symbol]
+                if not match.empty:
+                    return int(match.iloc[0]['openInterest'])
+        return 0
+    except Exception as e:
+        logging.error(f"OI fetch failed for {contract_symbol}: {e}")
+        return 0

@@ -3,10 +3,16 @@ import time
 import pandas as pd
 import random
 import logging
-from data_fetcher import get_stock_info, get_option_chain_data, get_macro_context
+import re
+from data_fetcher import get_stock_info, get_option_chain_data, get_macro_context, get_contract_oi
 from scanner import score_unusual, get_stock_heat, process_results
-from alerts import send_alert
-from historical_db import update_historical, is_alert_sent, mark_alert_sent, load_from_csv, save_to_csv, get_ticker_context
+from alerts import send_alert, send_confirmation_alert
+from historical_db import (
+    update_historical, is_alert_sent, mark_alert_sent, 
+    load_from_csv, save_to_csv, get_ticker_context,
+    get_unconfirmed_alerts, mark_alert_confirmed, update_trust_score,
+    init_db
+)
 from config import WATCHLIST_FILE, MAX_TICKERS, MIN_STOCK_Z_SCORE
 from massive_sync import sync_baselines
 
@@ -58,12 +64,61 @@ async def process_ticker_sequential(ticker):
         logging.error(f"Error on {ticker}: {e}")
         return []
 
+async def verify_stickiness():
+    """Checks if yesterday's whales held their positions."""
+    unconfirmed = get_unconfirmed_alerts()
+    if not unconfirmed: return
+
+    logging.info(f"Verifying stickiness for {len(unconfirmed)} past alerts...")
+    
+    for contract, timestamp in unconfirmed:
+        try:
+            # 1. Fetch current live OI
+            live_oi = get_contract_oi(contract)
+            if live_oi == 0: continue 
+
+            # 2. Get historical data
+            ticker_match = re.match(r'^([A-Z]+)', contract)
+            if not ticker_match: continue
+            ticker = ticker_match.group(1)
+            
+            conn = init_db()
+            # Get last 2 records for this contract to see yesterday's stats
+            hist = conn.execute("SELECT volume, oi FROM hist_vol_oi WHERE contract = ? ORDER BY date DESC LIMIT 2", (contract,)).fetchall()
+            conn.close()
+
+            if len(hist) < 2: continue
+            
+            yest_vol = hist[0][0]
+            yest_oi = hist[1][1]
+            oi_change = live_oi - yest_oi
+            
+            # 3. Calculate Stickiness %
+            if yest_vol > 0:
+                percentage = (oi_change / yest_vol) * 100
+                if percentage > 70:
+                    logging.info(f"✅ CONFIRMED: {contract} held {percentage:.1f}% overnight.")
+                    await send_confirmation_alert(ticker, contract, oi_change, percentage)
+                    update_trust_score(ticker, 0.1)
+                    mark_alert_confirmed(contract, 1)
+                elif percentage < 10:
+                    logging.info(f"❌ FADED: {contract} only held {percentage:.1f}%.")
+                    update_trust_score(ticker, -0.05)
+                    mark_alert_confirmed(contract, -1)
+                else:
+                    mark_alert_confirmed(contract, 2) # Partial
+        except Exception as e:
+            logging.error(f"Stickiness check failed for {contract}: {e}")
+
 async def scan_cycle():
     # 1. Pre-Scan Prep
     sync_baselines()
     load_from_csv()
     
-    # 2. Global Macro Context
+    # 2. Stickiness Verification
+    await verify_stickiness()
+    
+    # 3. Global Macro Context
     macro = get_macro_context()
     logging.info(f"Macro Sentiment: {macro['sentiment']} (SPY: {macro['spy_pc']}%, VIX: {macro['vix_pc']}%)")
 
@@ -72,21 +127,18 @@ async def scan_cycle():
 
     all_raw_alerts = []
 
-    # 3. Collect results sequentially
+    # 4. Collect results sequentially
     for ticker in watchlist:
         alerts_data = await process_ticker_sequential(ticker)
         all_raw_alerts.extend(alerts_data)
-        # Mandatory delay to stay under Yahoo radar
         time.sleep(random.uniform(3, 5))
 
-    # 4. Post-Process: Clustering & Sector Heat Mapping
-    # We extract just the 'trade' dicts for processing
+    # 5. Post-Process
     just_trades = [a['trade'] for a in all_raw_alerts]
     final_trades = process_results(just_trades, macro)
 
-    # 5. Send final consolidated alerts
+    # 6. Send Alerts
     for trade in final_trades:
-        # Re-link the context (finding the first match for that ticker)
         context = "No context available."
         for a in all_raw_alerts:
             if a['trade']['ticker'] == trade['ticker']:
@@ -101,7 +153,6 @@ async def scan_cycle():
             logging.info(f"Alert SENT for {trade['ticker']}!")
             await asyncio.sleep(1) 
 
-    # 6. Export updated database back to CSV
     save_to_csv()
 
 if __name__ == "__main__":

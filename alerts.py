@@ -112,3 +112,20 @@ Divergence: {ai['divergence'] if ai else 'None detected.'}"""
     except Exception as e:
         logging.error(f"Telegram failed: {e}")
         return False
+
+async def send_confirmation_alert(ticker, contract, oi_change, percentage):
+    """Sends a confirmation alert when a whale holds a position overnight."""
+    bot = Bot(token=TELEGRAM_TOKEN)
+    msg = f"""✅ WHALE CONFIRMED: {ticker} ✅
+The institutional position on {contract} was HELD overnight.
+
+📈 OI Change: +{oi_change:,} contracts
+🔥 Stickiness: {percentage:.1f}% of yesterday's volume held.
+Trust score for {ticker} has been increased."""
+
+    try:
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+        return True
+    except Exception as e:
+        logging.error(f"Telegram confirmation failed: {e}")
+        return False

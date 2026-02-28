@@ -28,6 +28,9 @@ def score_unusual(df, ticker, stock_z, sector="Unknown"):
     results = []
     if df.empty: return pd.DataFrame()
 
+    baseline = get_ticker_baseline(ticker)
+    trust_multiplier = baseline.get('trust_score', 1.0) if baseline else 1.0
+
     for _, row in df.iterrows():
         contract = row['contractSymbol']
         stats = get_stats(ticker, contract)
@@ -57,6 +60,10 @@ def score_unusual(df, ticker, stock_z, sector="Unknown"):
         # STOCK HEAT MULTIPLIER
         if stock_z > MIN_STOCK_Z_SCORE: score += 40
         if stock_z > 5: score += 60
+
+        # FINAL SCORING WITH TRUST MULTIPLIER
+        # This rewards tickers where whales consistently hold overnight
+        score = int(score * trust_multiplier)
 
         # 3. Filtering
         meets_mins = (
@@ -97,25 +104,17 @@ def process_results(all_results, macro_context):
     if not all_results: return []
     
     df = pd.DataFrame(all_results)
-    spy_z = abs(macro_context.get('spy_pc', 0) / 0.5) # Proxy Z-Score for SPY (assuming 0.5% is 1 std dev)
+    spy_z = abs(macro_context.get('spy_pc', 0) / 0.5) 
     
-    # 1. Calculate Sector-Wide Heat
     sector_heat = df.groupby('sector')['stock_z'].mean().to_dict()
-    
     final_alerts = []
     
-    # 2. Ticker Clustering
     for ticker, group in df.groupby('ticker'):
-        # If 3+ contracts flagged for same ticker -> CLUSTER
         if len(group) >= 3:
             best_trade = group.loc[group['score'].idxmax()].to_dict()
-            
-            # Refined Sector Risk Check: 
-            # If the whole sector is hot, is it just moving with SPY?
             ticker_sector = best_trade['sector']
             s_heat = sector_heat.get(ticker_sector, 0)
             
-            # VALID ALPHA: Sector heat must be > 2.0 AND significantly higher than SPY heat
             is_valid_sector_move = s_heat > 2.0 and s_heat > (spy_z * 2)
             
             cluster_msg = f"CLUSTER: {len(group)} strikes targeted."
@@ -123,20 +122,16 @@ def process_results(all_results, macro_context):
                 cluster_msg += f" 🔥 SECTOR STRENGTH: {ticker_sector} outperforming SPY."
             
             best_trade['aggression'] = cluster_msg
-            best_trade['score'] += 50 # Massive conviction bonus
+            best_trade['score'] += 50 
             best_trade['notional'] = group['notional'].sum()
             best_trade['volume'] = group['volume'].sum()
             final_alerts.append(best_trade)
         else:
-            # Individual trades: Still apply the Sector vs SPY noise filter
             for _, trade in group.iterrows():
                 t_dict = trade.to_dict()
                 s_heat = sector_heat.get(t_dict['sector'], 0)
-                
-                # If sector is hot but SPY is also hot, reduce the individual score weight
                 if s_heat > 2.0 and spy_z > 1.5:
-                    t_dict['score'] -= 20 # Penalize for "following the herd"
-                
+                    t_dict['score'] -= 20 
                 final_alerts.append(t_dict)
                 
     return final_alerts
