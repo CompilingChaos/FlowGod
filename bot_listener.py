@@ -46,35 +46,34 @@ def harvest_saved_trades():
                 TRADES_FILE = "trades_to_verify.csv"
 
                 def harvest_saved_trades():
-                ...
-                                if cb_data.startswith("save|"):
-                                    # Format: save|TICKER|TYPE|STRIKE|PRICE|GEX|VANNA|CHARM|SKEW
-                                    parts = cb_data.split("|")
-                                    ticker, t_type, strike, price = parts[1], parts[2], parts[3], parts[4]
-                                    gex, vanna, charm, skew = 0, 0, 0, 0
-                                    if len(parts) > 5:
-                                        gex, vanna, charm, skew = float(parts[5]), float(parts[6]), float(parts[7]), float(parts[8])
+                    if cb_data.startswith("save|"):
+                        # Format: save|TICKER|TYPE|STRIKE|PRICE|GEX|VANNA|CHARM|SKEW
+                        parts = cb_data.split("|")
+                        ticker, t_type, strike, price = parts[1], parts[2], parts[3], parts[4]
+                        gex, vanna, charm, skew = 0, 0, 0, 0
+                        if len(parts) > 5:
+                            gex, vanna, charm, skew = float(parts[5]), float(parts[6]), float(parts[7]), float(parts[8])
 
-                                    # Check if already logged (avoid duplicates)
-                                    is_duplicate = ((df['ticker'] == ticker) & 
-                                                   (df['type'] == t_type) & 
-                                                   (df['strike'] == float(strike)) &
-                                                   (df['status'] == "OPEN")).any()
+                        # Check if already logged (avoid duplicates)
+                        is_duplicate = ((df['ticker'] == ticker) & 
+                                        (df['type'] == t_type) & 
+                                        (df['strike'] == float(strike)) &
+                                        (df['status'] == "OPEN")).any()
 
-                                    if not is_duplicate:
-                                        new_row = {
-                                            "ticker": ticker,
-                                            "type": t_type,
-                                            "strike": float(strike),
-                                            "entry_price": float(price),
-                                            "date": datetime.now().isoformat(),
-                                            "p_l": 0.0,
-                                            "status": "OPEN"
-                                        }
-                                        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-                                        save_trade_pattern(ticker, t_type, gex, vanna, charm, skew)
-                                        new_saves += 1
-                                        logging.info(f"✅ Harvested Save: {ticker} {t_type} {strike} (Math Snapshot Captured)")
+                        if not is_duplicate:
+                            new_row = {
+                                "ticker": ticker,
+                                "type": t_type,
+                                "strike": float(strike),
+                                "entry_price": float(price),
+                                "date": datetime.now().isoformat(),
+                                "p_l": 0.0,
+                                "status": "OPEN"
+                            }
+                            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                            save_trade_pattern(ticker, t_type, gex, vanna, charm, skew)
+                            new_saves += 1
+                            logging.info(f"✅ Harvested Save: {ticker} {t_type} {strike} (Math Snapshot Captured)")
         if new_saves > 0:
             df.to_csv(TRADES_FILE, index=False)
             logging.info(f"Successfully harvested {new_saves} new trades.")
