@@ -1,10 +1,12 @@
 ticker,sector
-AAPL,Mag 7 / Tech Giants
-MSFT,Mag 7 / Tech Giants
-GOOGL,Mag 7 / Tech Giants
-META,Mag 7 / Tech Giants
-AMZN,Mag 7 / Tech Giants
-NFLX,Mag 7 / Tech Giants
+AAPL,Software
+MSFT,Software
+GOOGL,Software
+META,Software
+AMZN,Software
+NFLX,Software
+SNAP,Software
+CRWD,Software
 NVDA,AI & Semiconductors
 AMD,AI & Semiconductors
 AVGO,AI & Semiconductors
@@ -36,8 +38,9 @@ BMNR,Crypto Proxies
 RKLB,Space & Defense
 ASTS,Space & Defense
 ONDS,Space & Defense
-ACHR,Space & Defense
+DRO.AX,Space & Defense
 RHM.DE,Space & Defense
+BAESY,Space & Defense
 LLY,Pharma & Biotech
 NVO,Pharma & Biotech
 VKTX,Pharma & Biotech
@@ -49,15 +52,14 @@ PYPL,Fintech & Financials
 SOFI,Fintech & Financials
 HOOD,Fintech & Financials
 JPM,Fintech & Financials
-SNAP,Potential
-CRWD,Potential
-OSCR,Insurtec
-HIMS,Insurtec
-LMND,Insurtec
-TSLA,EV / Automotive
-LCID,EV / Automotive
-GM,EV / Automotive
-BYD,EV / Automotive
+OSCR,Insurtec / Health
+UNH,Insurtec / Health
+HIMS,Insurtec / Health
+TEM,Insurtec / Health
+LMND,Insurtec / Health
+TSLA,EV
+LCID,EV
+BYD,EV
 IONQ,Quantum Computing
 RGTI,Quantum Computing
 SPY,Indices & ETFs
