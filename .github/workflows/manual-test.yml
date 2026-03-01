@@ -1,13 +1,7 @@
 name: 🛠️ FlowGod Ultimate System Validation
 
 on:
-  workflow_dispatch: # Manual trigger
-  push:
-    branches:
-      - master
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
+  workflow_dispatch: # Manual trigger only
 
 jobs:
   validate_system:
