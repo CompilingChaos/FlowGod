@@ -12,6 +12,7 @@ FlowGod is a sophisticated institutional-grade options flow scanner and market m
 - **Shadow Intelligence Ingestion**: Bypasses standard APIs by shadowing internal JSON endpoints of **Cboe**, **Stockgrid**, and **House Stock Watcher**.
 - **Vectorized Math Engine**: High-performance Greeks and Microstructure calculations using NumPy vectorization, allowing sub-second analysis of full option chains.
 - **Tier-3 Critical Error Reporting**: Centralized "Black Box" monitoring that dispatches system failures, API bans, and bridge collapses directly to Telegram with stack traces.
+- **Gemini API Fallback**: Multi-key redundancy for the AI Analyst, ensuring uptime even if the primary API key exceeds rate limits or quotas.
 
 ## Core Mandates
 

@@ -3,24 +3,27 @@ import os
 import logging
 import json
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, GEMINI_API_KEY
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, GEMINI_API_KEY, GEMINI_API_KEY_FALLBACK
 from google import genai
 from historical_db import get_rag_context
 from scanner import generate_system_verdict
 from error_reporter import notify_error_sync
 
 def get_ai_summary(trade, ticker_context="", macro_context=None):
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if not gemini_key: return None
-    try:
-        client = genai.Client(api_key=gemini_key)
-        m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Neutral"}
-        sys_verdict, sys_logic = generate_system_verdict(trade)
-        
-        # RAG Memory Ingestion (Tier-3)
-        rag_precedent = get_rag_context(trade['ticker'], trade['type'])
+    keys = [GEMINI_API_KEY, GEMINI_API_KEY_FALLBACK]
+    last_error = None
 
-        prompt = f"""You are a Professional Trading Mentor. Explain this institutional flow in SIMPLE, PLAIN LANGUAGE.
+    for idx, key in enumerate(keys):
+        if not key: continue
+        try:
+            client = genai.Client(api_key=key)
+            m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Neutral"}
+            sys_verdict, sys_logic = generate_system_verdict(trade)
+            
+            # RAG Memory Ingestion (Tier-3)
+            rag_precedent = get_rag_context(trade['ticker'], trade['type'])
+
+            prompt = f"""You are a Professional Trading Mentor. Explain this institutional flow in SIMPLE, PLAIN LANGUAGE.
 
 DATA:
 - TICKER: {trade['ticker']} | Current Price: ${trade['underlying_price']}
@@ -61,14 +64,21 @@ RESPONSE SCHEMA (JSON ONLY):
   "analysis": "Simple overview of why this pattern matters"
 }}"""
 
-        response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt)
-        text = response.text.strip()
-        if "```json" in text: text = text.split("```json")[1].split("```")[0].strip()
-        elif "```" in text: text = text.split("```")[1].split("```")[0].strip()
-        return json.loads(text)
-    except Exception as e:
-        logging.error(f"AI Summary failed: {e}")
-        return None
+            response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt)
+            text = response.text.strip()
+            if "```json" in text: text = text.split("```json")[1].split("```")[0].strip()
+            elif "```" in text: text = text.split("```")[1].split("```")[0].strip()
+            return json.loads(text)
+        except Exception as e:
+            last_error = e
+            logging.warning(f"Gemini API attempt {idx+1} failed: {e}")
+            if idx == 0 and GEMINI_API_KEY_FALLBACK:
+                logging.info("🔄 Switching to Fallback Gemini API Key...")
+            continue
+    
+    if last_error:
+        logging.error(f"All Gemini API attempts exhausted: {last_error}")
+    return None
 
 async def send_alert(trade, ticker_context="", macro_context=None, is_shadow=False):
     try:
