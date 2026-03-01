@@ -111,7 +111,7 @@ Earnings: {trade.get('earnings_date', 'N/A')} ({trade.get('earnings_dte', -1)} d
 Weekly Alerts: {trade.get('weekly_count', 0)}x ({'Institutional Scaling' if trade.get('weekly_count', 0) >= 3 else 'Isolated Trade'})
 
 💬 SOCIAL SENTIMENT:
-Hype Z-Score: {trade.get('hype_z', 0)} ({'LOUD/FOMO' if trade.get('hype_z',0) > 2 else 'QUIET/ALPHA'})
+Hype Status: { '❄️ Cold (Pure Whale Flow)' if trade.get('hype_z', 0) <= 1.0 else '🌡️ Lukewarm (Retail Following)' if trade.get('hype_z', 0) <= 2.5 else '🔥 Overheated (FOMO Trap)' } (Z: {trade.get('hype_z', 0)})
 
 🧠 AI ANALYST:
 Analysis: {ai['analysis'] if ai and 'analysis' in ai else 'N/A'}"""
