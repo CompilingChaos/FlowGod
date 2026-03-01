@@ -3,7 +3,7 @@ import numpy as np
 import logging
 import math
 from scipy.stats import norm
-from historical_db import get_stats, get_ticker_baseline, get_weekly_campaign_stats, update_trust_score
+from historical_db import get_stats, get_ticker_baseline, get_weekly_campaign_stats, update_trust_score, get_matching_patterns
 from config import MIN_VOLUME, MIN_NOTIONAL, MIN_VOL_OI_RATIO, MIN_RELATIVE_VOL, MIN_STOCK_Z_SCORE
 from datetime import datetime, timedelta
 from error_reporter import notify_error_sync
@@ -238,14 +238,19 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
             score += agg_bonus + micro_bonus + earnings_bonus + sec_bonus
             
             # Pillar 1: Dynamic Regime Weights
-            if regime == "RISK_OFF" and row['side'] == 'puts': score += 30 # Reward downside conviction
-            if regime == "RISK_ON" and row['side'] == 'calls': score += 20 # Follow the trend
-            if regime == "HIGH_VOLATILITY": score -= 20 # Increase skepticism
+            if regime == "RISK_OFF" and row['side'] == 'puts': score += 30 
+            if regime == "RISK_ON" and row['side'] == 'calls': score += 20 
+            if regime == "HIGH_VOLATILITY": score -= 20 
 
             # Pillar 3: Divergence Bonus
             if divergence == "Relative Strength" and row['side'] == 'calls': score += 55
             if divergence == "Isolated Weakness" and row['side'] == 'puts': score += 55
             
+            # Pillar 2: Recursive Pattern Memory Bonus
+            pattern_avg_p_l = get_matching_patterns(row['gex'], row['vanna'], skew)
+            if pattern_avg_p_l > 15: score += 40 
+            elif pattern_avg_p_l < -10: score -= 30 
+
             if is_congress_buy and row['side'] == 'calls': score += 60
             if total_vanna > 500000 and row['side'] == 'calls' and skew < -0.05: score += 45
             if trend_p > 0.85: score += 30 

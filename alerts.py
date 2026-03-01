@@ -165,7 +165,7 @@ Hype Status: { '❄️ Cold (Pure Whale Flow)' if trade.get('hype_z', 0) <= 1.0 
 🧠 AI ANALYST:
 Analysis: {ai['analysis'] if ai and 'analysis' in ai else 'N/A'}"""
 
-        cb_data = f"save|{trade['ticker']}|{trade['type']}|{trade['strike']}|{trade['underlying_price']}"
+        cb_data = f"save|{trade['ticker']}|{trade['type']}|{trade['strike']}|{trade['underlying_price']}|{trade.get('gex',0)}|{trade.get('vanna_exp',0)}|{trade.get('charm_exp',0)}|{trade.get('skew',0)}"
         keyboard = [[InlineKeyboardButton("💾 SAVE TRADE", callback_data=cb_data)]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 

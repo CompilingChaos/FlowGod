@@ -29,7 +29,13 @@ def init_db():
                       trust_score REAL DEFAULT 1.0, avg_social_vel REAL DEFAULT 0.0,
                       earnings_date TEXT, last_updated TEXT)''')
         
-        # Schema Migrations (Add columns if they don't exist)
+        # Pillar 2: Recursive Pattern Memory
+        conn.execute('''CREATE TABLE IF NOT EXISTS trade_patterns
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT, type TEXT,
+                      gex REAL, vanna REAL, charm REAL, skew REAL, 
+                      p_l REAL, status TEXT DEFAULT 'OPEN')''')
+        
+        # Schema Migrations
         cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(ticker_stats)")
         columns = [column[1] for column in cursor.fetchall()]
@@ -44,6 +50,50 @@ def init_db():
         logging.error(f"DB Init Error: {e}")
         notify_error_sync("DB_INIT", e, "Critical failure initializing SQLite database.")
         return None
+
+def save_trade_pattern(ticker, t_type, gex, vanna, charm, skew):
+    conn = init_db()
+    if not conn: return
+    try:
+        conn.execute("""INSERT INTO trade_patterns (ticker, type, gex, vanna, charm, skew)
+                     VALUES (?, ?, ?, ?, ?, ?)""", (ticker, t_type, gex, vanna, charm, skew))
+        conn.commit()
+    except Exception as e:
+        logging.error(f"Failed to save pattern: {e}")
+    finally:
+        conn.close()
+
+def update_pattern_outcome(ticker, t_type, p_l):
+    conn = init_db()
+    if not conn: return
+    try:
+        # Find the most recent open pattern for this ticker/type and close it with P&L
+        conn.execute("""UPDATE trade_patterns SET p_l = ?, status = 'CLOSED'
+                     WHERE ticker = ? AND type = ? AND status = 'OPEN'
+                     ORDER BY id DESC LIMIT 1""", (p_l, ticker, t_type))
+        conn.commit()
+    except Exception as e:
+        logging.error(f"Failed to update pattern outcome: {e}")
+    finally:
+        conn.close()
+
+def get_matching_patterns(gex, vanna, skew):
+    """Statistical KNN-style match: Finds historical patterns with similar math."""
+    conn = init_db()
+    if not conn: return 0
+    try:
+        # Simple threshold matching: ±20% on core math metrics
+        query = """
+            SELECT AVG(p_l) FROM trade_patterns 
+            WHERE status = 'CLOSED'
+            AND gex BETWEEN ? AND ?
+            AND vanna BETWEEN ? AND ?
+        """
+        res = conn.execute(query, (gex*0.8, gex*1.2, vanna*0.8, vanna*1.2)).fetchone()
+        return res[0] if res and res[0] else 0
+    except: return 0
+    finally:
+        conn.close()
 
 def update_ticker_baseline(ticker, avg_vol, std_dev, sector="Unknown", social_vel=0.0, earnings_date=None):
     conn = init_db()

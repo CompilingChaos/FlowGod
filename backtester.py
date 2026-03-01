@@ -4,8 +4,10 @@ import logging
 import os
 from telegram import Bot
 import asyncio
+from datetime import datetime, timedelta
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 from error_reporter import notify_error_sync
+from historical_db import update_pattern_outcome
 
 TRADES_FILE = "trades_to_verify.csv"
 
@@ -31,6 +33,8 @@ async def run_backtest():
             try:
                 ticker = row['ticker']
                 entry_price = row['entry_price']
+                t_type = row['type']
+                entry_date = datetime.fromisoformat(row['date'])
                 
                 # Fetch current price
                 stock = yf.Ticker(ticker)
@@ -38,8 +42,17 @@ async def run_backtest():
                 
                 if current_price > 0:
                     p_l = ((current_price - entry_price) / entry_price) * 100
+                    if t_type == 'PUTS': p_l = -p_l # Invert for puts
+                    
                     df.at[idx, 'p_l'] = round(p_l, 2)
                     
+                    # Learning Logic: If > 3 days old or high profit/loss, close and teach the model
+                    days_open = (datetime.now() - entry_date).days
+                    if days_open >= 3 or abs(p_l) >= 20:
+                        df.at[idx, 'status'] = 'CLOSED'
+                        update_pattern_outcome(ticker, t_type, p_l)
+                        logging.info(f"🎓 Model Taught: {ticker} {t_type} outcome was {p_l:.1f}%")
+
                     status_icon = "🟢" if p_l > 0 else "🔴"
                     summary_msg += f"{status_icon} {ticker}: {p_l:+.2f}% (Price: ${current_price:.2f} vs Entry: ${entry_price:.2f})\n"
                     updated = True
