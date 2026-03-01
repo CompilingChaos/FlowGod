@@ -62,9 +62,16 @@ DATA:
 - TRADE: {trade['type']} {trade['strike']} | Exp: {trade['exp']}
 - CAMPAIGN: {trade.get('weekly_count', 0)} alerts this week.
 - TREND PROBABILITY: {trade.get('trend_prob', 0)*100:.0f}%
-- LEVELS: Ceiling ${trade['call_wall']} | Floor ${trade['put_wall']}
 - EARNINGS: {trade.get('earnings_date', 'N/A')} ({trade.get('earnings_dte', -1)} days away)
 - SEC SIGNAL: {trade.get('sec_signal', 'N/A')}
+
+RAW QUANTITATIVE METRICS:
+- GEX IMPACT: ${trade.get('gex', 0):,} (Dealer Delta hedging pressure)
+- VANNA EXPOSURE: ${trade.get('vanna_exp', 0):,} (Sensitivity to Volatility crush)
+- CHARM EXPOSURE: {trade.get('charm_exp', 0):,} (Sensitivity to Time decay)
+- GREEKS: Delta {trade.get('delta', 0)} | Gamma {trade.get('gamma', 0)}
+- INTENSITY: Vol {trade.get('volume', 0):,} vs OI {trade.get('oi', 0):,} (Ratio: {trade.get('rel_vol', 0)}x)
+- LEVELS: Ceiling ${trade.get('call_wall', 0)} | Floor ${trade.get('put_wall', 0)} | Flip ${trade.get('flip', 0)}
 
 REAL-TIME NEWS CONTEXT:
 {news_context}
@@ -80,12 +87,13 @@ MACRO MARKET CONTEXT:
 - SENTIMENT: {m['sentiment']}
 
 AI INSTRUCTIONS:
-1. Use the REAL-TIME NEWS CONTEXT to explain WHY this flow is happening.
-2. Check if the SEC SIGNAL confirms insider conviction (e.g. GHOST ECHO).
-3. Identify if this trade is a REPEAT of a winning pattern based on RAG Memory.
-4. Factor in Macro Sentiment: Is this "Risk-On" flow or a defensive hedge?
-5. Explain the TARGET: Where should I look to take profit based on the Ceiling/Floor?
-6. Validate SYSTEM VERDICT: {sys_verdict}. Suggest BUY, CALL, PUT, or NEUTRAL.
+1. Use the RAW QUANTITATIVE METRICS to determine the true magnitude of the trade. (e.g. Is the GEX impact large enough to move the stock?)
+2. Use the REAL-TIME NEWS CONTEXT to explain WHY this flow is happening.
+3. Check if the SEC SIGNAL confirms insider conviction (e.g. GHOST ECHO).
+4. Identify if this trade is a REPEAT of a winning pattern based on RAG Memory.
+5. Determine if the Delta/Gamma suggests a high-leverage directional bet or a cautious hedge.
+6. Explain the TARGET: Where should I look to take profit based on the Ceiling/Floor?
+7. Validate SYSTEM VERDICT: {sys_verdict}. Suggest BUY, CALL, PUT, or NEUTRAL.
 
 RESPONSE SCHEMA (JSON ONLY):
 {{
@@ -93,8 +101,8 @@ RESPONSE SCHEMA (JSON ONLY):
   "confidence_score": integer (0-100),
   "final_verdict": "BUY" | "CALL" | "PUT" | "NEUTRAL",
   "estimated_duration": "string",
-  "verdict_reasoning": "Simple explanation of the verdict based on news and flow",
-  "category": "e.g. Earnings Bet | Institutional Accumulation | News Front-Run",
+  "verdict_reasoning": "Simple explanation based on math, news, and flow",
+  "category": "e.g. Vanna Slingshot | Insider Echo | Speculative Potential",
   "analysis": "Simple overview of why this pattern matters"
 }}"""
 
