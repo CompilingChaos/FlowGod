@@ -82,8 +82,10 @@ async def verify_stickiness():
         except: pass
 
 async def scan_cycle():
-    # 1. Institutional Audit (Nightly OCC Check)
-    audit_clearinghouse()
+    # 1. Institutional Audit (Nightly OCC Check) - Only run once per day (e.g., between 14:00 and 14:30 UTC)
+    now_utc = datetime.utcnow()
+    if now_utc.hour == 14 and now_utc.minute < 35:
+        audit_clearinghouse()
 
     # 2. Pre-Scan Prep & Harvesting
     sync_baselines()
