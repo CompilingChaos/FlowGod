@@ -28,6 +28,16 @@ def init_db():
                      (ticker TEXT PRIMARY KEY, avg_vol REAL, std_dev REAL, sector TEXT, 
                       trust_score REAL DEFAULT 1.0, avg_social_vel REAL DEFAULT 0.0,
                       earnings_date TEXT, last_updated TEXT)''')
+        
+        # Schema Migrations (Add columns if they don't exist)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(ticker_stats)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'avg_social_vel' not in columns:
+            conn.execute("ALTER TABLE ticker_stats ADD COLUMN avg_social_vel REAL DEFAULT 0.0")
+        if 'earnings_date' not in columns:
+            conn.execute("ALTER TABLE ticker_stats ADD COLUMN earnings_date TEXT")
+            
         conn.commit()
         return conn
     except Exception as e:
