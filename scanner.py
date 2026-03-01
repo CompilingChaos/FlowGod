@@ -206,18 +206,25 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
             except: pass
         
         # SEC GHOST FILING AUDIT (Triggered on potential whale flow)
-        sec_label, sec_bonus = "Standard", 0
+        sec_label, sec_bonus = "Normal Activity", 0
         if any(df['volume'] > 500) or stock_z > 2.0:
             filings = get_sec_filings(ticker)
             if filings:
                 last_f = filings[0]
                 f_date = datetime.strptime(last_f['date'], '%Y-%m-%d').date()
-                if (datetime.now().date() - f_date).days <= 5:
-                    sec_label, sec_bonus = f"GHOST ECHO ({last_f['form']})", 50
-                else: sec_label = f"Last Filing: {last_f['form']} ({last_f['date']})"
+                days_ago = (datetime.now().date() - f_date).days
+                
+                if days_ago <= 5:
+                    if last_f['form'] == '4':
+                        sec_label, sec_bonus = "🔥 CEO/Insider Just Bought", 50
+                    else:
+                        sec_label, sec_bonus = "🐋 Major Whale Just Bought 5%+", 50
+                else:
+                    form_name = "Insider Buy" if last_f['form'] == '4' else "Whale Disclosure"
+                    sec_label = f"Last {form_name}: {last_f['date']}"
             else:
-                sec_label = "STEALTH ENTRY (No Filings 90d+)"
-                update_trust_score(ticker, 0.05) # Reward stealth conviction potential
+                sec_label = "👻 Stealth: No recent disclosures (90d+)"
+                update_trust_score(ticker, 0.05) 
 
         results = []
         for _, row in df.iterrows():

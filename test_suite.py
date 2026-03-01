@@ -114,10 +114,10 @@ async def run_ultimate_test_suite():
         'vanna_exp': 850000, 'charm_exp': 120000, 'flip': 142.0, 'ticker': 'NVDA', 'strike': 150.0, 
         'exp': '2024-06-21', 'volume': 8500, 'oi': 1200, 'notional': 4420000, 'rel_vol': 15.2, 
         'premium': 5.20, 'delta': 0.48, 'gamma': 0.025, 'vanna': 0.12, 'charm': 0.05, 
-        'gex': 1250000, 'score': 185, 'aggression': 'Aggressive (Ask) | SLINGSHOT', 
-        'sector': 'AI', 'sec_signal': 'GHOST ECHO (Form 4)', 'hype_z': 1.2, 'weekly_count': 4,
+        'score': 185, 'aggression': 'Aggressive (Ask) | SLINGSHOT', 
+        'sector': 'AI', 'sec_signal': '🔥 CEO/Insider Just Bought', 'hype_z': 1.2, 'weekly_count': 4,
         'earnings_date': '2026-05-20', 'earnings_dte': 45
-    }
+        }
     
     sent = await send_alert(test_trade, "FULL SYSTEM VALIDATION: Tier-4 confirmed.", macro)
     if sent:
