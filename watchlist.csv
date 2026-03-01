@@ -16,14 +16,16 @@ ASML,AI & Semiconductors
 MRVL,AI & Semiconductors
 QCOM,AI & Semiconductors
 DELL,AI & Semiconductors
+IFX.DE,AI & Semiconductors
 PLTR,AI & Semiconductors
-SMCI, AI & Semiconductors
+SMCI,AI & Semiconductors
 PATH,AI & Semiconductors
 BBAI,AI & Semiconductors
 IREN,AI & Semiconductors
 NBIS,AI & Semiconductors
 ORCL,AI & Semiconductors
 SNOW,AI & Semiconductors
+OKLO,AI & Semiconductors
 MSTR,Crypto Proxies
 COIN,Crypto Proxies
 RIOT,Crypto Proxies
@@ -33,6 +35,7 @@ WULF,Crypto Proxies
 BMNR,Crypto Proxies
 RKLB,Space & Defense
 ASTS,Space & Defense
+ONDS,Space & Defense
 RHM.DE,Space & Defense
 LLY,Pharma & Biotech
 NVO,Pharma & Biotech
@@ -45,10 +48,11 @@ PYPL,Fintech & Financials
 SOFI,Fintech & Financials
 HOOD,Fintech & Financials
 JPM,Fintech & Financials
-DJT,Potential
 SNAP,Potential
-OSCR,Potential
 CRWD,Potential
+OSCR,Insurtec
+HIMS,Insurtec
+LMND,Insurtec
 TSLA,EV / Automotive
 LCID,EV / Automotive
 GM,EV / Automotive
