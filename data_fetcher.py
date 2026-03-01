@@ -72,6 +72,43 @@ if CLOUDFLARE_PROXY_URL:
     except Exception as e:
         notify_error_sync("DATA_FETCHER_PATCH", e, "Failed to apply Cloudflare Bridge monkey patch.")
 
+def get_market_regime():
+    """
+    Pillar 1: Dynamic Market Regime Sensor.
+    Detects if the market is in 'Risk-On', 'Risk-Off', or 'High-Volatility Squeeze' state.
+    """
+    try:
+        vix = yf.Ticker("^VIX").fast_info['lastPrice']
+        spy_change = yf.Ticker("SPY").fast_info['day_change_percent']
+        
+        if vix > 25: return "HIGH_VOLATILITY"
+        if spy_change < -1.5 and vix > 20: return "RISK_OFF"
+        if spy_change > 0.5 and vix < 18: return "RISK_ON"
+        return "NEUTRAL"
+    except:
+        return "NEUTRAL"
+
+def get_sector_divergence(ticker, sector):
+    """
+    Pillar 3: Cross-Asset Hedge Detection.
+    Checks if a ticker is moving against its sector ETF (Divergence = High Conviction).
+    """
+    sector_map = {'Technology': 'XLK', 'Healthcare': 'XLV', 'Financial': 'XLF', 'Energy': 'XLE', 'Consumer Cyclical': 'XLY', 'Communication Services': 'XLC', 'Semiconductors': 'SMH'}
+    etf_symbol = sector_map.get(sector)
+    if not etf_symbol: return False # Can't detect
+    
+    try:
+        ticker_change = yf.Ticker(ticker).fast_info['day_change_percent']
+        etf_change = yf.Ticker(etf_symbol).fast_info['day_change_percent']
+        
+        # High Conviction: Stock is UP +1% while its Sector is DOWN -0.5% (Relative Strength)
+        if ticker_change > 1.0 and etf_change < -0.5: return "Relative Strength"
+        # Potential Hedge: Stock is DOWN -2% while Sector is FLAT (Isolated Dumping)
+        if ticker_change < -2.0 and etf_change > -0.2: return "Isolated Weakness"
+        return "Correlated"
+    except:
+        return "Correlated"
+
 def get_advanced_macro():
     """Fetches global macro context (SPY, VIX, DXY, TNX, QQQ) for institutional analysis."""
     try:
@@ -200,7 +237,6 @@ def get_social_velocity(ticker):
         if response.status_code == 200:
             data = response.json()
             messages = data.get('messages', [])
-            # Return actual message count as the 'velocity' baseline
             return float(len(messages))
         return 0.0
     except Exception as e:

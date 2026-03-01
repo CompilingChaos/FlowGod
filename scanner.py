@@ -7,7 +7,7 @@ from historical_db import get_stats, get_ticker_baseline, get_weekly_campaign_st
 from config import MIN_VOLUME, MIN_NOTIONAL, MIN_VOL_OI_RATIO, MIN_RELATIVE_VOL, MIN_STOCK_Z_SCORE
 from datetime import datetime, timedelta
 from error_reporter import notify_error_sync
-from data_fetcher import get_sec_filings
+from data_fetcher import get_sec_filings, get_sector_divergence
 
 def get_stock_heat(ticker, live_vol):
     try:
@@ -157,12 +157,15 @@ def classify_aggression(last_price, bid, ask):
     if last_price <= bid and bid > 0: return "Passive (Bid)", 0
     return "Neutral (Mid)", 10
 
-def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_vel=0.0, earnings_date=None, congress_tickers=None):
+def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_vel=0.0, earnings_date=None, congress_tickers=None, regime="NEUTRAL"):
     try:
         if df.empty: return pd.DataFrame()
         skew, contango, vol_bias = calculate_volatility_surface(df)
         is_congress_buy = ticker in (congress_tickers or [])
 
+        # Pillar 3: Sector Divergence Check
+        divergence = get_sector_divergence(ticker, sector)
+        
         baseline = get_ticker_baseline(ticker)
         trust_mult = baseline.get('trust_score', 1.0) if baseline else 1.0
         avg_social = baseline.get('avg_social_vel', 0.0) if baseline else 0.0
@@ -205,7 +208,7 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
                 if 0 <= days_to_earnings <= 7: earnings_bonus = 50 
             except: pass
         
-        # SEC GHOST FILING AUDIT (Triggered on potential whale flow)
+        # SEC GHOST FILING AUDIT
         sec_label, sec_bonus = "Normal Activity", 0
         if any(df['volume'] > 500) or stock_z > 2.0:
             filings = get_sec_filings(ticker)
@@ -213,12 +216,9 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
                 last_f = filings[0]
                 f_date = datetime.strptime(last_f['date'], '%Y-%m-%d').date()
                 days_ago = (datetime.now().date() - f_date).days
-                
                 if days_ago <= 5:
-                    if last_f['form'] == '4':
-                        sec_label, sec_bonus = "🔥 CEO/Insider Just Bought", 50
-                    else:
-                        sec_label, sec_bonus = "🐋 Major Whale Just Bought 5%+", 50
+                    if last_f['form'] == '4': sec_label, sec_bonus = "🔥 CEO/Insider Just Bought", 50
+                    else: sec_label, sec_bonus = "🐋 Major Whale Just Bought 5%+", 50
                 else:
                     form_name = "Insider Buy" if last_f['form'] == '4' else "Whale Disclosure"
                     sec_label = f"Last {form_name}: {last_f['date']}"
@@ -236,6 +236,16 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
             if row['volume'] > 1000: score += 20
             if row['notional'] > 500000: score += 40
             score += agg_bonus + micro_bonus + earnings_bonus + sec_bonus
+            
+            # Pillar 1: Dynamic Regime Weights
+            if regime == "RISK_OFF" and row['side'] == 'puts': score += 30 # Reward downside conviction
+            if regime == "RISK_ON" and row['side'] == 'calls': score += 20 # Follow the trend
+            if regime == "HIGH_VOLATILITY": score -= 20 # Increase skepticism
+
+            # Pillar 3: Divergence Bonus
+            if divergence == "Relative Strength" and row['side'] == 'calls': score += 55
+            if divergence == "Isolated Weakness" and row['side'] == 'puts': score += 55
+            
             if is_congress_buy and row['side'] == 'calls': score += 60
             if total_vanna > 500000 and row['side'] == 'calls' and skew < -0.05: score += 45
             if trend_p > 0.85: score += 30 
@@ -260,7 +270,8 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
                     'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
                     'sec_signal': sec_label, 'hype_z': round(hype_z, 1),
                     'earnings_dte': days_to_earnings, 'weekly_count': campaign_count,
-                    'detection_reason': f"Score {score} | {sec_label} | {'SLINGSHOT' if total_vanna > 500000 else vol_bias}"
+                    'regime': regime, 'divergence': divergence,
+                    'detection_reason': f"Score {score} | {regime} | {divergence}"
                 })
         return pd.DataFrame(results)
     except Exception as e:
@@ -269,12 +280,15 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
 
 def generate_system_verdict(trade):
     try:
-        t_type, spot = trade['type'], trade.get('underlying_price', 0)
+        t_type, spot, regime = trade['type'], trade.get('underlying_price', 0), trade.get('regime', "NEUTRAL")
         vanna_exp, skew, agg, trend_p = trade.get('vanna_exp', 0), trade.get('skew', 0), trade.get('aggression', ""), trade.get('trend_prob', 0.5)
         e_dte, w_count, sec = trade.get('earnings_dte', -1), trade.get('weekly_count', 0), trade.get('sec_signal', "")
         
         verdict, logic = "NEUTRAL", "Low conviction."
         
+        if trade.get('divergence') == "Relative Strength" and "CALL" in t_type:
+            return "IDIOSYNCRATIC ALPHA (Long)", "Stock is outperforming its sector. Pure institutional conviction."
+
         if "GHOST ECHO" in sec:
             verdict, logic = f"{t_type} (Insider Echo)", f"Aggressive flow mirroring recent SEC filing. High institutional conviction."
             return verdict, logic

@@ -4,7 +4,7 @@ import pandas as pd
 import random
 import logging
 import re
-from data_fetcher import get_stock_info, get_option_chain_data, get_advanced_macro, get_contract_oi, get_sector_etf_performance, get_intraday_aggression, get_social_velocity
+from data_fetcher import get_stock_info, get_option_chain_data, get_advanced_macro, get_contract_oi, get_sector_etf_performance, get_intraday_aggression, get_social_velocity, get_market_regime
 from scanner import score_unusual, get_stock_heat, process_results
 from alerts import send_alert, send_confirmation_alert
 from historical_db import (
@@ -20,7 +20,7 @@ from occ_auditor import audit_clearinghouse
 from shadow_ingestion import ShadowDeepDive, run_deep_dive_analysis
 from error_reporter import reporter
 
-async def process_ticker_sequential(ticker, sector_from_csv, current_idx, total_count, is_deep_dive=False, congress_tickers=None):
+async def process_ticker_sequential(ticker, sector_from_csv, current_idx, total_count, is_deep_dive=False, congress_tickers=None, regime="NEUTRAL"):
     """Sequential worker function."""
     try:
         logging.info(f"[{current_idx}/{total_count}] Scanning {ticker} ({sector_from_csv})...")
@@ -47,8 +47,8 @@ async def process_ticker_sequential(ticker, sector_from_csv, current_idx, total_
         update_historical(ticker, df)
         context = get_ticker_context(ticker, days=2)
 
-        # Scorer now handles Surface, GEX Walls, TRV, Social Hype, Earnings, Pelosi, and SEC Signals
-        flags = score_unusual(df, ticker, stock_z, sector, candle, social_vel, earnings_date, congress_tickers=congress_tickers)
+        # Scorer now handles Surface, GEX Walls, TRV, Social Hype, Earnings, Pelosi, SEC, and REGIME Signals
+        flags = score_unusual(df, ticker, stock_z, sector, candle, social_vel, earnings_date, congress_tickers=congress_tickers, regime=regime)
 
         trades_to_alert = []
         for _, trade in flags.iterrows():
@@ -96,6 +96,8 @@ async def scan_cycle():
     # 4. Market Context
     macro = get_advanced_macro()
     sectors = get_sector_etf_performance()
+    regime = get_market_regime()
+    logging.info(f"🌐 Market Regime Sensor: {regime}")
     
     # 5. Tier-3 Shadow Intelligence Trigger
     shadow = ShadowDeepDive()
@@ -121,7 +123,7 @@ async def scan_cycle():
     total_to_scan = len(scan_list)
     all_raw_alerts = []
     for idx, item in enumerate(scan_list):
-        alerts_data = await process_ticker_sequential(item['ticker'], item['sector'], idx+1, total_to_scan, is_deep_dive=item['is_deep'], congress_tickers=congress_tickers)
+        alerts_data = await process_ticker_sequential(item['ticker'], item['sector'], idx+1, total_to_scan, is_deep_dive=item['is_deep'], congress_tickers=congress_tickers, regime=regime)
         all_raw_alerts.extend(alerts_data)
         time.sleep(random.uniform(3, 5))
 

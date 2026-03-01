@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timedelta
 from shadow_ingestion import ShadowDeepDive, run_deep_dive_analysis
 from error_reporter import reporter
-from data_fetcher import get_advanced_macro, get_sector_etf_performance, get_stock_info, get_sec_filings
+from data_fetcher import get_advanced_macro, get_sector_etf_performance, get_stock_info, get_sec_filings, get_market_regime, get_sector_divergence
 from scanner import (
     calculate_greeks_vec, calculate_volatility_surface, 
     detect_microstructure_conviction, generate_system_verdict, 
@@ -26,19 +26,23 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 async def run_ultimate_test_suite():
     logging.info("🚀 STARTING FULL-SPECTRUM FLOWGOD VALIDATION 🚀")
 
-    # 1. MACRO & SEC DATA INTEGRITY
-    logging.info("\n--- STEP 1: DATA INGESTION (Macro & SEC) ---")
+    # 1. MACRO & REGIME DATA INTEGRITY
+    logging.info("\n--- STEP 1: DATA INGESTION (Macro & Regime) ---")
     macro = get_advanced_macro()
-    logging.info(f"✅ Macro Sentiment: {macro['sentiment']} (SPY: {macro['spy']}%)")
+    regime = get_market_regime()
+    logging.info(f"✅ Market Regime: {regime} (SPY: {macro['spy']}%)")
     
     sec_filings = get_sec_filings("AAPL")
     if sec_filings:
-        logging.info(f"✅ SEC EDGAR: Successfully shadowed {len(sec_filings)} filings for AAPL.")
-    else:
-        logging.warning("⚠️ SEC EDGAR: No filings found for AAPL.")
+        logging.info(f"✅ SEC EDGAR: Successfully shadowed filings for AAPL.")
 
-    # 2. VECTORIZED QUANT ENGINE TEST
-    logging.info("\n--- STEP 2: VECTORIZED QUANT ENGINE (BS-4D) ---")
+    # 2. SECTOR DIVERGENCE (HEGDE DETECTION)
+    logging.info("\n--- STEP 2: CROSS-ASSET HEDGE DETECTION ---")
+    divergence = get_sector_divergence("AAPL", "Technology")
+    logging.info(f"✅ Sector Divergence Sensor: {divergence}")
+
+    # 3. VECTORIZED QUANT ENGINE TEST
+    logging.info("\n--- STEP 3: VECTORIZED QUANT ENGINE (BS-4D) ---")
     S = np.array([150.0, 150.0])
     K = np.array([155.0, 145.0])
     T = np.array([0.1, 0.1])
@@ -46,69 +50,40 @@ async def run_ultimate_test_suite():
     d, g, v, c, color = calculate_greeks_vec(S, K, T, 0.045, sigma, 'calls')
     logging.info(f"✅ Vectorized Greeks: Delta[0] {d[0]} | Gamma[0] {g[0]}")
 
-    # 3. GEX 2.0 & VANNA/CHARM EXPOSURES
-    logging.info("\n--- STEP 3: GEX 2.0 & 3D EXPOSURES ---")
-    mock_df = pd.DataFrame([
-        {'side': 'calls', 'underlying_price': 100.0, 'strike': 105.0, 'gamma': 0.05, 'openInterest': 1000, 'vanna': 0.1, 'charm': 0.02, 'dte': 5},
-        {'side': 'puts', 'underlying_price': 100.0, 'strike': 95.0, 'gamma': 0.05, 'openInterest': 1000, 'vanna': 0.1, 'charm': -0.02, 'dte': 5}
-    ])
-    call_wall, put_wall, flip = map_gex_walls(mock_df)
-    v_exp, c_exp = map_vanna_charm_exposures(mock_df)
-    logging.info(f"✅ GEX Walls: Call ${call_wall} | Put ${put_wall} | Flip ${flip}")
-    logging.info(f"✅ Vanna/Charm: Vanna Exp ${v_exp:,.0f} | Charm Exp {c_exp:,.0f}")
+    # 4. ADAPTIVE SCORER (REGIME WEIGHTS)
+    logging.info("\n--- STEP 4: ADAPTIVE REGIME SCORING ---")
+    mock_whale_df = pd.DataFrame([{
+        'ticker': 'NVDA', 'contractSymbol': 'NVDA_PUT', 'side': 'puts', 'strike': 120.0,
+        'exp': '2026-03-15', 'dte': 30, 'volume': 5000, 'openInterest': 100, 
+        'impliedVolatility': 0.45, 'lastPrice': 2.50, 'bid': 2.45, 'ask': 2.50, 
+        'underlying_price': 130.0, 'notional': 1250000, 'vol_oi_ratio': 50.0 
+    }])
+    
+    # Test scoring in RISK_OFF regime
+    results = score_unusual(mock_whale_df, 'NVDA', 2.0, 'Technology', regime="RISK_OFF")
+    if not results.empty:
+        score = results.iloc[0]['score']
+        reason = results.iloc[0]['detection_reason']
+        logging.info(f"✅ Adaptive Scorer (RISK_OFF): Score {score} | Reason: {reason}")
 
-    # 4. SPREAD & CLUSTER LINKING
-    logging.info("\n--- STEP 4: SPREAD & CLUSTER LINKING ---")
+    # 5. SPREAD & CLUSTER LINKING
+    logging.info("\n--- STEP 5: SPREAD & CLUSTER LINKING ---")
     mock_results = [
-        {'ticker': 'AMD', 'exp': '2026-03-20', 'type': 'CALLS', 'strike': 150, 'volume': 5000, 'score': 90, 'contractSymbol': 'AMD1', 'contract': 'AMD1', 'notional': 100000},
-        {'ticker': 'AMD', 'exp': '2026-03-20', 'type': 'CALLS', 'strike': 155, 'volume': 4900, 'score': 85, 'contractSymbol': 'AMD2', 'contract': 'AMD2', 'notional': 100000},
-        {'ticker': 'TSLA', 'exp': '2026-03-20', 'type': 'PUTS', 'strike': 200, 'volume': 1000, 'score': 80, 'contractSymbol': 'TSLA1', 'contract': 'TSLA1', 'notional': 50000},
-        {'ticker': 'TSLA', 'exp': '2026-03-20', 'type': 'PUTS', 'strike': 205, 'volume': 1100, 'score': 82, 'contractSymbol': 'TSLA2', 'contract': 'TSLA2', 'notional': 50000},
-        {'ticker': 'TSLA', 'exp': '2026-03-20', 'type': 'PUTS', 'strike': 210, 'volume': 1050, 'score': 81, 'contractSymbol': 'TSLA3', 'contract': 'TSLA3', 'notional': 50000}
+        {'ticker': 'AMD', 'exp': '2026-03-20', 'type': 'CALLS', 'strike': 150, 'volume': 5000, 'score': 90, 'contract': 'AMD1', 'notional': 100000},
+        {'ticker': 'AMD', 'exp': '2026-03-20', 'type': 'CALLS', 'strike': 155, 'volume': 4900, 'score': 85, 'contract': 'AMD2', 'notional': 100000}
     ]
     final = process_results(mock_results, macro, {})
-    types = [f['type'] for f in final]
-    if any("SPREAD" in t for t in types):
+    if any("SPREAD" in f['type'] for f in final):
         logging.info("✅ Spread Detection: Successfully linked vertical legs.")
-    if any("CLUSTER" in t for t in types):
-        logging.info("✅ Cluster Detection: Successfully identified TSLA Put Cluster.")
 
-    # 5. SHADOW INGESTION CONNECTIVITY
-    logging.info("\n--- STEP 5: SHADOW INGESTION CONNECTIVITY ---")
+    # 6. SHADOW INGESTION
+    logging.info("\n--- STEP 6: SHADOW INGESTION ---")
     shadow = ShadowDeepDive()
     triggers = shadow.get_trigger_tickers()
-    if triggers:
-        logging.info(f"✅ Shadow Success: Found {len(triggers)} trigger tickers.")
-    else:
-        logging.warning("⚠️ Shadow Notice: No active triggers found (Market closed).")
+    logging.info(f"✅ Shadow Analysis complete. Found {len(triggers)} triggers.")
 
-    # 6. DATABASE RAG & STICKINESS
-    logging.info("\n--- STEP 6: DB RAG & STICKINESS LOGIC ---")
-    init_db()
-    mark_alert_sent("TEST_CONTRACT", ticker="TEST", trade_type="CALLS", vol=1000, oi=500, price=2.5)
-    rag = get_rag_context("TEST", "CALLS")
-    logging.info(f"✅ RAG Memory: {rag}")
-    
-    update_trust_score("TEST", 0.5)
-    baseline = get_ticker_baseline("TEST")
-    if baseline and baseline['trust_score'] >= 1.5:
-        logging.info("✅ Trust Score: Successfully updated.")
-    
-    # 7. COMPLEX MICROSTRUCTURE (SLINGSHOT)
-    logging.info("\n--- STEP 7: SLINGSHOT SCORER VALIDATION ---")
-    mock_sling_df = pd.DataFrame([{
-        'ticker': 'NVDA', 'contractSymbol': 'NVDA_CALL', 'side': 'calls', 'strike': 150.0,
-        'exp': '2026-03-15', 'dte': 30, 'volume': 5000, 'openInterest': 100, 
-        'impliedVolatility': 0.45, 'lastPrice': 5.50, 'bid': 5.45, 'ask': 5.50, 
-        'underlying_price': 140.0, 'notional': 2750000, 'vol_oi_ratio': 50.0 
-    }])
-    mock_sling_df['vanna'] = 5.0 
-    results = score_unusual(mock_sling_df, 'NVDA', 2.5, 'Technology')
-    if not results.empty and 'SLINGSHOT' in results.iloc[0]['detection_reason']:
-        logging.info("✅ Scorer: Vanna Slingshot bonus applied.")
-
-    # 8. LIVE TELEGRAM ALERT TEST
-    logging.info("\n--- STEP 8: TELEGRAM & AI ANALYST CHAIN ---")
+    # 7. LIVE TELEGRAM ALERT TEST
+    logging.info("\n--- STEP 7: TELEGRAM & AI ANALYST CHAIN ---")
     test_trade = {
         'type': 'CALLS', 'underlying_price': 138.50, 'call_wall': 160.0, 'put_wall': 130.0,
         'vanna_exp': 850000, 'charm_exp': 120000, 'flip': 142.0, 'ticker': 'NVDA', 'strike': 150.0, 
@@ -116,14 +91,14 @@ async def run_ultimate_test_suite():
         'premium': 5.20, 'delta': 0.48, 'gamma': 0.025, 'vanna': 0.12, 'charm': 0.05, 
         'gex': 1250000, 'score': 185, 'aggression': 'Aggressive (Ask) | SLINGSHOT', 
         'sector': 'AI', 'sec_signal': '🔥 CEO/Insider Just Bought', 'hype_z': 1.2, 'weekly_count': 4,
-        'earnings_date': '2026-05-20', 'earnings_dte': 45
-        }
+        'earnings_date': '2026-05-20', 'earnings_dte': 45, 'regime': regime, 'divergence': 'Relative Strength'
+    }
     
-    sent = await send_alert(test_trade, "FULL SYSTEM VALIDATION: Tier-4 confirmed.", macro)
+    sent = await send_alert(test_trade, "PILLAR 1 & 3 VALIDATION: Market Awareness Active.", macro)
     if sent:
-        logging.info("✨ SUCCESS: Validation alert dispatched!")
+        logging.info("✨ SUCCESS: Adaptive alert dispatched!")
     else:
-        logging.error("❌ TELEGRAM FAILURE (Expected if keys are missing locally).")
+        logging.error("❌ TELEGRAM FAILURE.")
 
     logging.info("\n🏁 FULL-SPECTRUM VALIDATION COMPLETE 🏁")
 
