@@ -45,7 +45,8 @@ jobs:
         run: |
           git config --global user.name "FlowGod-Bot"
           git config --global user.email "bot@flowgod.ai"
-          git add historical_data.csv database.db
+          git add historical_data.csv
+          git add -f database.db
           if [ -f trades_to_verify.csv ]; then git add trades_to_verify.csv; fi
           git commit -m "Update persistent data [skip ci]" || echo "No changes to commit"
           git push origin master
