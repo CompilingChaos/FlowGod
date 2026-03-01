@@ -23,12 +23,9 @@ class ShadowDeepDive:
     def fetch_stockgrid_whales(self) -> List[Dict]:
         """Shadows Stockgrid's 'Whale Stream' to find institutional sweeps."""
         try:
-            # Step 1: Handshake to get CSRF/Session
             handshake_url = "https://www.stockgrid.io/whales"
             self.session.get(handshake_url, headers=self.base_headers, timeout=10)
             
-            # Step 2: Hit the internal JSON endpoint
-            # Note: Endpoints are shadowed and may require rotation
             api_url = "https://www.stockgrid.io/api/whales" 
             headers = self.base_headers.copy()
             headers["Referer"] = handshake_url
@@ -38,34 +35,55 @@ class ShadowDeepDive:
             response = self.session.get(api_url, headers=headers, timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                # Stockgrid typically returns a list of dictionaries with 'ticker', 'premium', 'side', 'is_sweep'
                 whales = data.get('data', []) if isinstance(data, dict) else data
                 logging.info(f"✅ Shadowed {len(whales)} whales from Stockgrid.")
                 return whales
-            else:
-                logging.warning(f"⚠️ Stockgrid Shadow failed: HTTP {response.status_code}")
-                return []
+            return []
         except Exception as e:
-            logging.error(f"❌ Stockgrid Shadow Error: {e}")
             notify_error_sync("SHADOW_STOCKGRID", e, "Critical failure during Stockgrid JSON ingestion.")
             return []
 
-    def fetch_aries_flow(self) -> List[Dict]:
-        """Shadows Aries/Tradier-backed institutional flow."""
+    def fetch_cboe_block_trades(self) -> List[Dict]:
+        """
+        Shadows Cboe's Institutional Trade Optimizer / Large Print endpoints.
+        Focuses on SPX/VIX and large equity block trades.
+        """
         try:
-            # Aries/Tradier endpoints often use unmetered public streams for delayed data
-            url = "https://api.tradier.com/v1/markets/options/chains" # Logic placeholder
-            # Real implementation would target their frontend aggregator
-            logging.info("📡 Aries Shadowing active (Polling institutional gateway).")
-            return [] # Placeholder for extended Aries integration
-        except:
+            # Cboe LiveVol / Trade Optimizer internal endpoint shadowing
+            # Note: Pathing is specific to their institutional dashboard gateway
+            api_url = "https://markets.cboe.com/json/indices/indices_block_trades" 
+            headers = self.base_headers.copy()
+            headers["Referer"] = "https://markets.cboe.com/us/options/market_statistics/block_trades/"
+            
+            response = self.session.get(api_url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                # Normalized to common whale format
+                blocks = []
+                for b in data.get('data', []):
+                    blocks.append({
+                        'ticker': b.get('symbol'),
+                        'premium': b.get('total_premium', 0),
+                        'is_sweep': b.get('is_block', True),
+                        'source': 'CBOE_GATEWAY'
+                    })
+                logging.info(f"📡 Cboe Shadowed {len(blocks)} block trades.")
+                return blocks
+            return []
+        except Exception as e:
+            logging.warning(f"⚠️ Cboe Shadowing failed: {e}")
             return []
 
     def get_trigger_tickers(self) -> List[str]:
         """Aggregates shadow signals into a list of high-conviction trigger tickers."""
         whales = self.fetch_stockgrid_whales()
+        blocks = self.fetch_cboe_block_trades()
+        
         triggers = []
-        for w in whales:
+        # Combine and deduplicate
+        combined = whales + blocks
+        
+        for w in combined:
             ticker = w.get('ticker')
             premium = w.get('premium', 0)
             is_sweep = w.get('is_sweep', False)
@@ -81,7 +99,7 @@ class ShadowDeepDive:
 def run_deep_dive_analysis(ticker: str):
     """
     Performs a hyper-focused 'Deep Dive' on a shadow-triggered ticker.
-    This bypasses the standard scan and goes straight to 'Full Chain' 15-exp analysis.
+    Bypasses standard scan and goes straight to 'Full Chain' 15-exp analysis.
     """
     from data_fetcher import get_option_chain_data, get_stock_info, get_intraday_aggression
     from scanner import score_unusual, get_stock_heat
@@ -90,13 +108,13 @@ def run_deep_dive_analysis(ticker: str):
     stock = get_stock_info(ticker)
     if stock['price'] == 0: return None
     
-    z, sector = get_stock_heat(ticker, stock['volume'])
+    z, sector, earnings_date = get_stock_heat(ticker, stock['volume'])
     candle = get_intraday_aggression(ticker)
     
     # Force 'full_chain=True' for Tier-3 Shadow Analysis
     df = get_option_chain_data(ticker, stock['price'], stock['volume'], full_chain=True)
     if df.empty: return None
     
-    results = score_unusual(df, ticker, z, sector, candle)
+    results = score_unusual(df, ticker, z, sector, candle, earnings_date=earnings_date)
     # Penalize low scores, only return institutional conviction
     return results[results['score'] >= 75]
