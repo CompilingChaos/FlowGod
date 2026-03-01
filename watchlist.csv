@@ -5,7 +5,6 @@ GOOGL,Mag 7 / Tech Giants
 META,Mag 7 / Tech Giants
 AMZN,Mag 7 / Tech Giants
 NFLX,Mag 7 / Tech Giants
-TSLA,Mag 7 / Tech Giants
 NVDA,AI & Semiconductors
 AMD,AI & Semiconductors
 AVGO,AI & Semiconductors
@@ -46,8 +45,11 @@ PYPL,Fintech & Financials
 SOFI,Fintech & Financials
 HOOD,Fintech & Financials
 JPM,Fintech & Financials
-DJT,Retail / Beta / Sentiment
-SNAP,Retail / Beta / Sentiment
+DJT,Potential
+SNAP,Potential
+OSCR,Potential
+CRWD,Potential
+TSLA,EV / Automotive
 LCID,EV / Automotive
 GM,EV / Automotive
 BYD,EV / Automotive
