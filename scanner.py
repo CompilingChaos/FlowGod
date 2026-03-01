@@ -60,6 +60,26 @@ def calculate_volatility_surface(df):
         notify_error_sync("MATH_VOL_SURFACE", e, "Failed to map volatility surface.")
         return 0, 0, "NEUTRAL"
 
+def map_vanna_charm_exposures(df):
+    """
+    Tier-3: 3D Exposure Mapping.
+    Calculates total dollar-gamma sensitivity to IV (Vanna) and Time (Charm).
+    """
+    if df.empty: return 0, 0
+    try:
+        # Vanna Exposure: $ value shift per 1% change in IV
+        # Positive Vanna means an IV Crush forces dealer BUYING.
+        df['vanna_exp'] = df['vanna'] * df['openInterest'] * 100 * df['underlying_price'] * 0.01
+        
+        # Charm Exposure: Delta bleed per day
+        # High Charm predicts forced rebalancing as the weekend/expiry approaches.
+        df['charm_exp'] = df['charm'] * df['openInterest'] * 100
+        
+        return df['vanna_exp'].sum(), df['charm_exp'].sum()
+    except Exception as e:
+        notify_error_sync("MATH_VANNA_CHARM", e, "Failed to map Vanna/Charm exposures.")
+        return 0, 0
+
 def map_gex_walls(df):
     if df.empty: return 0, 0, 0
     try:
@@ -177,6 +197,7 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
         df['decay_vel'] = df['color'] * df['openInterest'] * 100
         
         call_wall, put_wall, flip = map_gex_walls(df)
+        total_vanna, total_charm = map_vanna_charm_exposures(df)
         total_decay_vel = int(df['decay_vel'].sum())
         spot = df.iloc[0]['underlying_price']
         
@@ -205,6 +226,10 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
             if row['volume'] > 1000: score += 20
             if row['notional'] > 500000: score += 40
             score += agg_bonus + micro_bonus + earnings_bonus
+            
+            # SLINGSHOT BONUS: High Vanna + Bullish Skew + Aggressive Call Flow
+            if total_vanna > 500000 and row['side'] == 'calls' and skew < -0.05: score += 45
+            
             if trend_p > 0.85: score += 30 
             if is_cheap_put: score += 45 
             if is_skew_inverted: score += 55 
@@ -223,13 +248,14 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
                     'oi': int(row['openInterest']), 'premium': round(row['lastPrice'], 2),
                     'notional': int(row['notional']), 'rel_vol': round(row['volume']/(get_stats(ticker, row['contractSymbol'])['avg_vol']+1), 1),
                     'delta': row['delta'], 'gamma': row['gamma'], 'vanna': row['vanna'], 'charm': row['charm'],
-                    'gex': int(row['gex']), 'decay_vel': total_decay_vel, 'call_wall': call_wall, 'put_wall': put_wall, 'flip': flip,
+                    'gex': int(row['gex']), 'vanna_exp': int(total_vanna), 'charm_exp': int(total_charm),
+                    'decay_vel': total_decay_vel, 'call_wall': call_wall, 'put_wall': put_wall, 'flip': flip,
                     'skew': skew, 'bias': vol_bias, 'score': score, 'trend_prob': trend_p,
                     'aggression': f"{agg_label} | {micro_label} | {hvn_label}",
                     'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
                     'hype_z': round(hype_z, 1),
                     'earnings_dte': days_to_earnings, 'weekly_count': campaign_count,
-                    'detection_reason': f"Score {score} | {hvn_label} | {'CAMPAIGN' if campaign_count >= 3 else vol_bias}"
+                    'detection_reason': f"Score {score} | {hvn_label} | {'SLINGSHOT' if total_vanna > 500000 else vol_bias}"
                 })
         return pd.DataFrame(results)
     except Exception as e:
@@ -240,9 +266,22 @@ def generate_system_verdict(trade):
     try:
         t_type, spot = trade['type'], trade.get('underlying_price', 0)
         call_wall, put_wall = trade.get('call_wall', 0), trade.get('put_wall', 0)
+        vanna_exp, charm_exp = trade.get('vanna_exp', 0), trade.get('charm_exp', 0)
         skew, agg, trend_p = trade.get('skew', 0), trade.get('aggression', ""), trade.get('trend_prob', 0.5)
         e_dte, w_count = trade.get('earnings_dte', -1), trade.get('weekly_count', 0)
+        
         verdict, logic = "NEUTRAL", "Low conviction."
+        
+        # 1. THE VANNA SLINGSHOT (Predictive Dealer Buying)
+        if vanna_exp > 750000 and "CALL" in t_type and skew < -0.05:
+            verdict, logic = "VANNA SLINGSHOT (Long)", "High Vanna + IV Crush imminent. Dealers forced to BUY to maintain hedges."
+            return verdict, logic
+            
+        # 2. THE CHARM BLEED (Predictive Opex/Weekend Flow)
+        if abs(charm_exp) > 1000000 and "PUT" in t_type and spot < trade.get('flip', 0):
+            verdict, logic = "CHARM BLEED (Short)", "Massive Delta decay. Dealers forced to SELL as time to expiry decreases."
+            return verdict, logic
+
         if "CALL" in t_type and "Aggressive" in agg:
             if w_count >= 3: verdict, logic = "CALL (Long)", f"Active Weekly Campaign ({w_count} alerts). Massive institutional scaling."
             elif 0 <= e_dte <= 7: verdict, logic = "CALL (Long)", f"Earnings Front-Running ({e_dte}d). High Gamma setup."
