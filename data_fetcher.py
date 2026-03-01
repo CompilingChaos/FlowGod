@@ -45,10 +45,12 @@ def get_sec_filings(ticker):
         if response.status_code == 200:
             data = response.json()
             recent = data.get('filings', {}).get('recent', {})
+            forms = recent.get('form', [])
+            dates = recent.get('filingDate', [])
             filings = []
-            for i in range(min(5, len(recent.get('form', [])))):
-                form = recent['form'][i]
-                date = recent['filingDate'][i]
+            for i in range(min(5, len(forms))):
+                form = forms[i]
+                date = dates[i]
                 if form in ['4', '13D', '13G']:
                     filings.append({'form': form, 'date': date})
             return filings
@@ -78,8 +80,8 @@ def get_market_regime():
     Detects if the market is in 'Risk-On', 'Risk-Off', or 'High-Volatility Squeeze' state.
     """
     try:
-        vix = yf.Ticker("^VIX").fast_info['lastPrice']
-        spy_change = yf.Ticker("SPY").fast_info['day_change_percent']
+        vix = yf.Ticker("^VIX").fast_info.get('lastPrice', 20)
+        spy_change = yf.Ticker("SPY").fast_info.get('day_change_percent', 0)
         
         if vix > 25: return "HIGH_VOLATILITY"
         if spy_change < -1.5 and vix > 20: return "RISK_OFF"
@@ -95,15 +97,16 @@ def get_sector_divergence(ticker, sector):
     """
     sector_map = {'Technology': 'XLK', 'Healthcare': 'XLV', 'Financial': 'XLF', 'Energy': 'XLE', 'Consumer Cyclical': 'XLY', 'Communication Services': 'XLC', 'Semiconductors': 'SMH'}
     etf_symbol = sector_map.get(sector)
-    if not etf_symbol: return False # Can't detect
+    if not etf_symbol: return "Correlated"
     
     try:
-        ticker_change = yf.Ticker(ticker).fast_info['day_change_percent']
-        etf_change = yf.Ticker(etf_symbol).fast_info['day_change_percent']
+        t_info = yf.Ticker(ticker).fast_info
+        e_info = yf.Ticker(etf_symbol).fast_info
         
-        # High Conviction: Stock is UP +1% while its Sector is DOWN -0.5% (Relative Strength)
+        ticker_change = t_info.get('day_change_percent', 0)
+        etf_change = e_info.get('day_change_percent', 0)
+        
         if ticker_change > 1.0 and etf_change < -0.5: return "Relative Strength"
-        # Potential Hedge: Stock is DOWN -2% while Sector is FLAT (Isolated Dumping)
         if ticker_change < -2.0 and etf_change > -0.2: return "Isolated Weakness"
         return "Correlated"
     except:
@@ -112,16 +115,16 @@ def get_sector_divergence(ticker, sector):
 def get_advanced_macro():
     """Fetches global macro context (SPY, VIX, DXY, TNX, QQQ) for institutional analysis."""
     try:
-        spy = yf.Ticker("SPY")
-        vix = yf.Ticker("^VIX")
-        dxy = yf.Ticker("DX-Y.NYB")
-        tnx = yf.Ticker("^TNX")
-        qqq = yf.Ticker("QQQ")
-        spy_pc = spy.fast_info.get('day_change_percent', 0)
-        vix_pc = vix.fast_info.get('day_change_percent', 0)
-        dxy_pc = dxy.fast_info.get('day_change_percent', 0)
-        tnx_pc = tnx.fast_info.get('day_change_percent', 0)
-        qqq_pc = qqq.fast_info.get('day_change_percent', 0)
+        tickers = ["SPY", "^VIX", "DX-Y.NYB", "^TNX", "QQQ"]
+        data = {}
+        for t in tickers:
+            info = yf.Ticker(t).fast_info
+            data[t] = info.get('day_change_percent', 0)
+        
+        spy_pc, vix_pc = data.get("SPY", 0), data.get("^VIX", 0)
+        dxy_pc, tnx_pc = data.get("DX-Y.NYB", 0), data.get("^TNX", 0)
+        qqq_pc = data.get("QQQ", 0)
+        
         sentiment = "Neutral"
         if spy_pc < -1.0 and vix_pc > 5.0: sentiment = "Fearful / Risk-Off"
         if spy_pc > 0.5 and vix_pc < -3.0: sentiment = "Bullish / Risk-On"
@@ -161,12 +164,12 @@ def get_intraday_aggression(ticker):
         df['vol_density'] = df['Volume'] / df['price_range']
         rolling_mean = df['vol_density'].rolling(window=30).mean()
         rolling_std = df['vol_density'].rolling(window=30).std()
-        df['dark_z'] = (df['vol_density'] - rolling_mean) / rolling_std
+        df['dark_z'] = (df['vol_density'] - rolling_mean) / (rolling_std + 0.001)
         
         candle = df.iloc[-1].to_dict()
         candle['vwap'] = df['VWAP'].iloc[-1]
-        candle['dark_z_max'] = df['dark_z'].iloc[-5:].max()
-        candle['prev_close'] = df['Close'].iloc[-2]
+        candle['dark_z_max'] = float(df['dark_z'].iloc[-5:].max())
+        candle['prev_close'] = float(df['Close'].iloc[-2])
         return candle
     except Exception as e:
         logging.error(f"Intraday analysis failed for {ticker}: {e}")
@@ -202,7 +205,6 @@ def get_option_chain_data(ticker, price, stock_vol, full_chain=False):
                 side['vol_oi_ratio'] = side['volume'] / (side['openInterest'].replace(0, 1) + 1)
                 side['underlying_price'], side['underlying_vol'] = price, stock_vol
                 side['moneyness'] = abs(side['strike'] - price) / price * 100 if price > 0 else 0
-                side['bid'], side['ask'] = side['bid'], side['ask']
                 all_data.append(side)
             time.sleep(0.6)
     except Exception as e:

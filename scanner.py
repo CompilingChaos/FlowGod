@@ -70,10 +70,10 @@ def map_vanna_charm_exposures(df):
     try:
         df['vanna_exp'] = df['vanna'] * df['openInterest'] * 100 * df['underlying_price'] * 0.01
         df['charm_exp'] = df['charm'] * df['openInterest'] * 100
-        return df['vanna_exp'].sum(), df['charm_exp'].sum()
+        return float(df['vanna_exp'].sum()), float(df['charm_exp'].sum())
     except Exception as e:
         notify_error_sync("MATH_VANNA_CHARM", e, "Failed to map Vanna/Charm exposures.")
-        return 0, 0
+        return 0.0, 0.0
 
 def map_gex_walls(df):
     if df.empty: return 0, 0, 0
@@ -83,17 +83,17 @@ def map_gex_walls(df):
                                  -df['gamma'] * df['openInterest'] * 100 * df['underlying_price'])
         
         strike_gex = df.groupby('strike')['net_gex'].sum()
-        call_wall, put_wall = strike_gex.idxmax(), strike_gex.idxmin()
+        call_wall, put_wall = float(strike_gex.idxmax()), float(strike_gex.idxmin())
         
-        flip, strike_gex_sorted = 0, strike_gex.sort_index()
+        flip, strike_gex_sorted = 0.0, strike_gex.sort_index()
         for i in range(len(strike_gex_sorted)-1):
             if np.sign(strike_gex_sorted.iloc[i]) != np.sign(strike_gex_sorted.iloc[i+1]):
-                flip = strike_gex_sorted.index[i]
+                flip = float(strike_gex_sorted.index[i])
                 break
         return call_wall, put_wall, flip
     except Exception as e:
         notify_error_sync("MATH_GEX_WALLS", e, "Failed to map GEX Walls/Flip Point.")
-        return 0, 0, 0
+        return 0.0, 0.0, 0.0
 
 def calculate_hvn_conviction(df_1m, t_type, spot):
     if df_1m is None or len(df_1m) < 20: return 1.0, "N/A"
@@ -195,7 +195,7 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
         call_wall, put_wall, flip = map_gex_walls(df)
         total_vanna, total_charm = map_vanna_charm_exposures(df)
         total_decay_vel = int(df['decay_vel'].sum())
-        spot = df.iloc[0]['underlying_price']
+        spot = float(df.iloc[0]['underlying_price']) if not df.empty else 0.0
         
         micro_label, micro_bonus = detect_microstructure_conviction(candle_df)
         trend_p = predict_trend_probability(candle_df, call_wall, put_wall)
@@ -214,14 +214,16 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
             filings = get_sec_filings(ticker)
             if filings:
                 last_f = filings[0]
-                f_date = datetime.strptime(last_f['date'], '%Y-%m-%d').date()
-                days_ago = (datetime.now().date() - f_date).days
-                if days_ago <= 5:
-                    if last_f['form'] == '4': sec_label, sec_bonus = "🔥 CEO/Insider Just Bought", 50
-                    else: sec_label, sec_bonus = "🐋 Major Whale Just Bought 5%+", 50
-                else:
-                    form_name = "Insider Buy" if last_f['form'] == '4' else "Whale Disclosure"
-                    sec_label = f"Last {form_name}: {last_f['date']}"
+                try:
+                    f_date = datetime.strptime(last_f['date'], '%Y-%m-%d').date()
+                    days_ago = (datetime.now().date() - f_date).days
+                    if days_ago <= 5:
+                        if last_f['form'] == '4': sec_label, sec_bonus = "🔥 CEO/Insider Just Bought", 50
+                        else: sec_label, sec_bonus = "🐋 Major Whale Just Bought 5%+", 50
+                    else:
+                        form_name = "Insider Buy" if last_f['form'] == '4' else "Whale Disclosure"
+                        sec_label = f"Last {form_name}: {last_f['date']}"
+                except: sec_label = "SEC Disclosure Active"
             else:
                 sec_label = "👻 Stealth: No recent disclosures (90d+)"
                 update_trust_score(ticker, 0.05) 
@@ -294,7 +296,7 @@ def generate_system_verdict(trade):
         if trade.get('divergence') == "Relative Strength" and "CALL" in t_type:
             return "IDIOSYNCRATIC ALPHA (Long)", "Stock is outperforming its sector. Pure institutional conviction."
 
-        if "GHOST ECHO" in sec:
+        if "GHOST ECHO" in sec or "Bought" in sec:
             verdict, logic = f"{t_type} (Insider Echo)", f"Aggressive flow mirroring recent SEC filing. High institutional conviction."
             return verdict, logic
 
