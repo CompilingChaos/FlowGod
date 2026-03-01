@@ -20,8 +20,7 @@ async def run_ultimate_test_suite():
     logging.info("🚀 STARTING THE ULTIMATE FLOWGOD VALIDATION SUITE 🚀")
 
     # 1. MACRO & SEC DATA INTEGRITY
-    logging.info("
---- STEP 1: DATA INGESTION (Macro & SEC) ---")
+    logging.info("\n--- STEP 1: DATA INGESTION (Macro & SEC) ---")
     macro = get_advanced_macro()
     logging.info(f"✅ Macro Sentiment: {macro['sentiment']} (SPY: {macro['spy']}%)")
     
@@ -32,8 +31,7 @@ async def run_ultimate_test_suite():
         logging.warning("⚠️ SEC EDGAR: No filings found for AAPL (Check compliance/UA).")
 
     # 2. VECTORIZED QUANT ENGINE TEST
-    logging.info("
---- STEP 2: VECTORIZED QUANT ENGINE (BS-4D) ---")
+    logging.info("\n--- STEP 2: VECTORIZED QUANT ENGINE (BS-4D) ---")
     S = np.array([150.0, 150.0])
     K = np.array([155.0, 145.0])
     T = np.array([0.1, 0.1])
@@ -43,8 +41,7 @@ async def run_ultimate_test_suite():
     logging.info(f"✅ Vectorized Greeks: Delta[0] {d[0]} | Gamma[0] {g[0]} | Vanna[0] {v[0]}")
 
     # 3. VANNA/CHARM EXPOSURE TEST
-    logging.info("
---- STEP 3: 3D EXPOSURE MAPPING (Vanna/Charm) ---")
+    logging.info("\n--- STEP 3: 3D EXPOSURE MAPPING (Vanna/Charm) ---")
     mock_df = pd.DataFrame([{
         'side': 'calls', 'underlying_price': 150.0, 'strike': 155.0, 
         'vanna': 0.12, 'charm': 0.05, 'openInterest': 1000, 'dte': 10
@@ -53,8 +50,7 @@ async def run_ultimate_test_suite():
     logging.info(f"✅ Exposure Mapping: Vanna Exp ${v_exp:,.0f} | Charm Exp {c_exp:,.0f}")
 
     # 4. PELOSI & GHOST FILING SCENARIO
-    logging.info("
---- STEP 4: INSIDER & GHOST FILING LOGIC ---")
+    logging.info("\n--- STEP 4: INSIDER & GHOST FILING LOGIC ---")
     mock_whale_df = pd.DataFrame([{
         'ticker': 'PLTR', 'contractSymbol': 'PLTR_CALL', 'side': 'calls', 'strike': 25.0,
         'exp': '2026-03-15', 'dte': 30, 'volume': 5000, 'openInterest': 100, 
@@ -75,8 +71,7 @@ async def run_ultimate_test_suite():
         logging.warning("⚠️ Pelosi Scorer: Logic skipped or thresholds not met.")
 
     # 5. LIVE TELEGRAM ALERT TEST
-    logging.info("
---- STEP 5: FULL ALERT CHAIN & AI ANALYST ---")
+    logging.info("\n--- STEP 5: FULL ALERT CHAIN & AI ANALYST ---")
     test_trade = {
         'type': 'CALLS', 'underlying_price': 138.50, 'call_wall': 160.0, 'put_wall': 130.0,
         'vanna_exp': 850000, 'charm_exp': 120000, 'flip': 142.0,
@@ -96,8 +91,7 @@ async def run_ultimate_test_suite():
     else:
         logging.error("❌ TELEGRAM FAILURE. Check your keys.")
 
-    logging.info("
-🏁 ULTIMATE VALIDATION COMPLETE 🏁")
+    logging.info("\n🏁 ULTIMATE VALIDATION COMPLETE 🏁")
 
 if __name__ == "__main__":
     asyncio.run(run_ultimate_test_suite())

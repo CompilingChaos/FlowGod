@@ -17,7 +17,7 @@ FlowGod is a sophisticated institutional-grade options flow scanner and market m
 
 - **GitHub Integration**: Every change made to the codebase MUST be committed to GitHub.
 - **Documentation Maintenance**: The `GEMINI.md` file must be updated whenever significant changes are implemented.
-- **Testing**: Use `test_suite.py` to validate the quant engine, data ingestion, and alerting chain before committing.
+- **Testing**: Use `test_suite.py` to validate the quant engine, data ingestion, and alerting chain. This is automatically executed via **GitHub Actions** on every push to master or can be triggered manually via the `FlowGod Ultimate System Validation` workflow.
 
 ## Tech Stack
 
