@@ -29,6 +29,7 @@ DATA:
 - TREND PROBABILITY: {trade.get('trend_prob', 0)*100:.0f}%
 - LEVELS: Ceiling ${trade['call_wall']} | Floor ${trade['put_wall']}
 - EARNINGS: {trade.get('earnings_date', 'N/A')} ({trade.get('earnings_dte', -1)} days away)
+- SEC SIGNAL: {trade.get('sec_signal', 'N/A')}
 
 HISTORICAL RAG MEMORY:
 {rag_precedent}
@@ -41,12 +42,13 @@ MACRO MARKET CONTEXT:
 - SENTIMENT: {m['sentiment']}
 
 AI INSTRUCTIONS:
-1. Identify if this trade is a REPEAT of a winning pattern based on RAG Memory.
-2. Determine if this ticker is being "Accumulated" (persistent spikes in Context) or is an isolated event.
-3. Factor in Macro Sentiment: Is this "Risk-On" flow or a defensive hedge?
-4. Explain WHY this is happening (e.g., "Whales are betting on a big move before earnings").
-5. Explain the TARGET: Where should I look to take profit based on the Ceiling/Floor?
-6. Validate SYSTEM VERDICT: {sys_verdict}. Suggest BUY, CALL, PUT, or NEUTRAL.
+1. Check if the SEC SIGNAL confirms insider conviction (e.g. GHOST ECHO).
+2. Identify if this trade is a REPEAT of a winning pattern based on RAG Memory.
+3. Determine if this ticker is being "Accumulated" (persistent spikes in Context) or is an isolated event.
+4. Factor in Macro Sentiment: Is this "Risk-On" flow or a defensive hedge?
+5. Explain WHY this is happening (e.g., "Whales are betting on a big move before earnings").
+6. Explain the TARGET: Where should I look to take profit based on the Ceiling/Floor?
+7. Validate SYSTEM VERDICT: {sys_verdict}. Suggest BUY, CALL, PUT, or NEUTRAL.
 
 RESPONSE SCHEMA (JSON ONLY):
 {{
@@ -102,8 +104,7 @@ Major Ceiling: ${trade['call_wall']} | Major Floor: ${trade['put_wall']}
 Trend Catalyst: ${trade['flip']}
 
 🗓️ CATALYST:
-...
-
+SEC Signal: {trade.get('sec_signal', 'N/A')}
 Earnings: {trade.get('earnings_date', 'N/A')} ({trade.get('earnings_dte', -1)} days)
 
 📢 CAMPAIGN:

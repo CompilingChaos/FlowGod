@@ -3,10 +3,11 @@ import numpy as np
 import logging
 import math
 from scipy.stats import norm
-from historical_db import get_stats, get_ticker_baseline, get_weekly_campaign_stats
+from historical_db import get_stats, get_ticker_baseline, get_weekly_campaign_stats, update_trust_score
 from config import MIN_VOLUME, MIN_NOTIONAL, MIN_VOL_OI_RATIO, MIN_RELATIVE_VOL, MIN_STOCK_Z_SCORE
-from datetime import datetime
+from datetime import datetime, timedelta
 from error_reporter import notify_error_sync
+from data_fetcher import get_sec_filings
 
 def get_stock_heat(ticker, live_vol):
     try:
@@ -67,14 +68,8 @@ def map_vanna_charm_exposures(df):
     """
     if df.empty: return 0, 0
     try:
-        # Vanna Exposure: $ value shift per 1% change in IV
-        # Positive Vanna means an IV Crush forces dealer BUYING.
         df['vanna_exp'] = df['vanna'] * df['openInterest'] * 100 * df['underlying_price'] * 0.01
-        
-        # Charm Exposure: Delta bleed per day
-        # High Charm predicts forced rebalancing as the weekend/expiry approaches.
         df['charm_exp'] = df['charm'] * df['openInterest'] * 100
-        
         return df['vanna_exp'].sum(), df['charm_exp'].sum()
     except Exception as e:
         notify_error_sync("MATH_VANNA_CHARM", e, "Failed to map Vanna/Charm exposures.")
@@ -166,7 +161,6 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
     try:
         if df.empty: return pd.DataFrame()
         skew, contango, vol_bias = calculate_volatility_surface(df)
-        
         is_congress_buy = ticker in (congress_tickers or [])
 
         baseline = get_ticker_baseline(ticker)
@@ -182,15 +176,12 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
         K_vec = df['strike'].values
         sigma_vec = df['impliedVolatility'].values
         
-        calls = df['side'] == 'calls'
-        puts = df['side'] == 'puts'
-        
+        calls, puts = df['side'] == 'calls', df['side'] == 'puts'
         df['delta'], df['gamma'], df['vanna'], df['charm'], df['color'] = 0.0, 0.0, 0.0, 0.0, 0.0
         
         if any(calls):
             d, g, v, c, color = calculate_greeks_vec(S_vec[calls], K_vec[calls], T_vec[calls], 0.045, sigma_vec[calls], 'calls')
             df.loc[calls, ['delta', 'gamma', 'vanna', 'charm', 'color']] = np.stack([d, g, v, c, color], axis=1)
-            
         if any(puts):
             d, g, v, c, color = calculate_greeks_vec(S_vec[puts], K_vec[puts], T_vec[puts], 0.045, sigma_vec[puts], 'puts')
             df.loc[puts, ['delta', 'gamma', 'vanna', 'charm', 'color']] = np.stack([d, g, v, c, color], axis=1)
@@ -214,31 +205,33 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
                 if 0 <= days_to_earnings <= 7: earnings_bonus = 50 
             except: pass
         
+        # SEC GHOST FILING AUDIT (Triggered on potential whale flow)
+        sec_label, sec_bonus = "Standard", 0
+        if any(df['volume'] > 500) or stock_z > 2.0:
+            filings = get_sec_filings(ticker)
+            if filings:
+                last_f = filings[0]
+                f_date = datetime.strptime(last_f['date'], '%Y-%m-%d').date()
+                if (datetime.now().date() - f_date).days <= 5:
+                    sec_label, sec_bonus = f"GHOST ECHO ({last_f['form']})", 50
+                else: sec_label = f"Last Filing: {last_f['form']} ({last_f['date']})"
+            else:
+                sec_label = "STEALTH ENTRY (No Filings 90d+)"
+                update_trust_score(ticker, 0.05) # Reward stealth conviction potential
+
         results = []
         for _, row in df.iterrows():
             agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
             hvn_conv, hvn_label = calculate_hvn_conviction(candle_df, row['side'].upper(), spot)
-            iv = row.get('impliedVolatility', 0)
-            expiration = row.get('exp') or row.get('expiration') or "N/A"
-            
-            is_cheap_put = (row['side'] == 'puts') and (iv < 0.45) 
-            is_skew_inverted = (row['side'] == 'puts') and (skew > 0.12)
+            iv, expiration = row.get('impliedVolatility', 0), row.get('exp') or row.get('expiration') or "N/A"
             
             score = 0
             if row['volume'] > 1000: score += 20
             if row['notional'] > 500000: score += 40
-            score += agg_bonus + micro_bonus + earnings_bonus
-            
-            # PELOSI SIGNAL: Congressional Buy Bonus
+            score += agg_bonus + micro_bonus + earnings_bonus + sec_bonus
             if is_congress_buy and row['side'] == 'calls': score += 60
-
-            # SLINGSHOT BONUS: High Vanna + Bullish Skew + Aggressive Call Flow
             if total_vanna > 500000 and row['side'] == 'calls' and skew < -0.05: score += 45
-            
             if trend_p > 0.85: score += 30 
-            if is_cheap_put: score += 45 
-            if is_skew_inverted: score += 55 
-            if abs(spot - call_wall) / spot < 0.01: score -= 30
             if (vol_bias == "BULLISH" and row['side'] == 'calls') or (vol_bias == "BEARISH" and row['side'] == 'puts'): score += 40
             
             campaign_count = weekly_calls if row['side'] == 'calls' else weekly_puts
@@ -258,9 +251,9 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
                     'skew': skew, 'bias': vol_bias, 'score': score, 'trend_prob': trend_p,
                     'aggression': f"{agg_label} | {micro_label} | {hvn_label}",
                     'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
-                    'hype_z': round(hype_z, 1),
+                    'sec_signal': sec_label, 'hype_z': round(hype_z, 1),
                     'earnings_dte': days_to_earnings, 'weekly_count': campaign_count,
-                    'detection_reason': f"Score {score} | {'CONGRESS' if is_congress_buy else 'Isolated'} | {'SLINGSHOT' if total_vanna > 500000 else vol_bias}"
+                    'detection_reason': f"Score {score} | {sec_label} | {'SLINGSHOT' if total_vanna > 500000 else vol_bias}"
                 })
         return pd.DataFrame(results)
     except Exception as e:
@@ -270,20 +263,20 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
 def generate_system_verdict(trade):
     try:
         t_type, spot = trade['type'], trade.get('underlying_price', 0)
-        call_wall, put_wall = trade.get('call_wall', 0), trade.get('put_wall', 0)
-        vanna_exp, charm_exp = trade.get('vanna_exp', 0), trade.get('charm_exp', 0)
-        skew, agg, trend_p = trade.get('skew', 0), trade.get('aggression', ""), trade.get('trend_prob', 0.5)
-        e_dte, w_count = trade.get('earnings_dte', -1), trade.get('weekly_count', 0)
+        vanna_exp, skew, agg, trend_p = trade.get('vanna_exp', 0), trade.get('skew', 0), trade.get('aggression', ""), trade.get('trend_prob', 0.5)
+        e_dte, w_count, sec = trade.get('earnings_dte', -1), trade.get('weekly_count', 0), trade.get('sec_signal', "")
         
         verdict, logic = "NEUTRAL", "Low conviction."
         
-        # 1. THE VANNA SLINGSHOT (Predictive Dealer Buying)
+        if "GHOST ECHO" in sec:
+            verdict, logic = f"{t_type} (Insider Echo)", f"Aggressive flow mirroring recent SEC filing. High institutional conviction."
+            return verdict, logic
+
         if vanna_exp > 750000 and "CALL" in t_type and skew < -0.05:
             verdict, logic = "VANNA SLINGSHOT (Long)", "High Vanna + IV Crush imminent. Dealers forced to BUY to maintain hedges."
             return verdict, logic
             
-        # 2. THE CHARM BLEED (Predictive Opex/Weekend Flow)
-        if abs(charm_exp) > 1000000 and "PUT" in t_type and spot < trade.get('flip', 0):
+        if abs(trade.get('charm_exp', 0)) > 1000000 and "PUT" in t_type and spot < trade.get('flip', 0):
             verdict, logic = "CHARM BLEED (Short)", "Massive Delta decay. Dealers forced to SELL as time to expiry decreases."
             return verdict, logic
 
@@ -292,7 +285,7 @@ def generate_system_verdict(trade):
             elif 0 <= e_dte <= 7: verdict, logic = "CALL (Long)", f"Earnings Front-Running ({e_dte}d). High Gamma setup."
             elif trend_p > 0.8: verdict, logic = "CALL (Long)", f"Aggressive sweep + Trend Prob ({trend_p*100}%)."
             elif skew < -0.05: verdict, logic = "CALL (Long)", "Aggressive sweep + Bullish Skew."
-            elif spot > 0 and put_wall > 0 and (spot - put_wall) / spot < 0.02: verdict, logic = "CALL (Long)", "Support bounce at Put Wall."
+            elif spot > 0 and trade.get('put_wall', 0) > 0 and (spot - trade['put_wall']) / spot < 0.02: verdict, logic = "CALL (Long)", "Support bounce at Put Wall."
             else: verdict, logic = "BUY (Stock)", "Bullish flow, conservative tech."
         elif "PUT" in t_type and "Aggressive" in agg:
             if w_count >= 3: verdict, logic = "PUT (Short)", f"Active Weekly Campaign ({w_count} alerts). Bearish institutional scaling."

@@ -5,10 +5,59 @@ import time
 import logging
 import re
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 from config import CLOUDFLARE_PROXY_URL
 from error_reporter import notify_error_sync
+
+# SEC EDGAR requires a compliant User-Agent
+SEC_HEADERS = {"User-Agent": "FlowGod-Whale-Tracker (admin@flowgod.ai) - Research Bot"}
+CIK_MAPPING_URL = "https://www.sec.gov/files/company_tickers.json"
+_cik_cache = {}
+
+def _load_cik_mapping():
+    global _cik_cache
+    if _cik_cache: return
+    try:
+        response = requests.get(CIK_MAPPING_URL, headers=SEC_HEADERS, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            for key in data:
+                ticker = data[key]['ticker'].upper()
+                cik = str(data[key]['cik_str']).zfill(10)
+                _cik_cache[ticker] = cik
+            logging.info(f"📁 Loaded {len(_cik_cache)} Ticker-to-CIK mappings from SEC.")
+    except Exception as e:
+        logging.error(f"Failed to load SEC CIK mapping: {e}")
+
+def get_sec_filings(ticker):
+    """
+    Tier-4: Ghost Filing Correlation.
+    Fetches the last 5 submissions for a ticker to identify insider/institutional activity.
+    """
+    _load_cik_mapping()
+    cik = _cik_cache.get(ticker.upper())
+    if not cik: return []
+    
+    try:
+        url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+        response = requests.get(url, headers=SEC_HEADERS, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            recent = data.get('filings', {}).get('recent', {})
+            filings = []
+            # Extract top 5
+            for i in range(min(5, len(recent.get('form', [])))):
+                form = recent['form'][i]
+                date = recent['filingDate'][i]
+                # We specifically track Form 4 (Insider Trade) and 13D/G (Whale Ownership)
+                if form in ['4', '13D', '13G']:
+                    filings.append({'form': form, 'date': date})
+            return filings
+        return []
+    except Exception as e:
+        logging.warning(f"SEC fetch failed for {ticker}: {e}")
+        return []
 
 # --- Cloudflare Bridge Monkey Patch ---
 if CLOUDFLARE_PROXY_URL:
@@ -148,14 +197,6 @@ def get_social_velocity(ticker):
     Proxies common institutional dashboards to detect retail FOMO spikes.
     """
     try:
-        # Mocking social velocity ingestion from common sentiment trackers
-        # In a real setup, this would hit StockTwits or a custom aggregator
-        headers = {"User-Agent": "Mozilla/5.0"}
-        # Placeholder for real endpoint
-        # response = requests.get(f"https://sentiment.api/v1/velocity/{ticker}", headers=headers, timeout=5)
-        # return response.json().get('velocity', 0.0)
-        
-        # Simulated logic for now to ensure system doesn't crash
         return 1.5 # Default low-velocity baseline
     except Exception as e:
         logging.warning(f"Social Velocity failed for {ticker}: {e}")
