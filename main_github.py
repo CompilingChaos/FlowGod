@@ -4,6 +4,7 @@ import pandas as pd
 import random
 import logging
 import re
+from datetime import datetime
 from data_fetcher import get_stock_info, get_option_chain_data, get_advanced_macro, get_contract_oi, get_sector_etf_performance, get_intraday_aggression, get_social_velocity, get_market_regime
 from scanner import score_unusual, get_stock_heat, process_results
 from alerts import send_alert, send_confirmation_alert
