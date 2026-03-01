@@ -7,6 +7,8 @@ AMZN,Software
 NFLX,Software
 SNAP,Software
 CRWD,Software
+APP,Software
+ZETA,Software
 NVDA,AI & Semiconductors
 AMD,AI & Semiconductors
 AVGO,AI & Semiconductors
@@ -54,14 +56,15 @@ SOFI,Fintech & Financials
 HOOD,Fintech & Financials
 JPM,Fintech & Financials
 OPEN,Fintech & Financials
-OSCR,Insurtec / Health
-UNH,Insurtec / Health
-HIMS,Insurtec / Health
-TEM,Insurtec / Health
-LMND,Insurtec / Health
+OSCR,Insurtec & Health
+UNH,Insurtec & Health
+HIMS,Insurtec & Health
+TEM,Insurtec & Health
+LMND,Insurtec & Health
 TSLA,EV
 LCID,EV
 BYD,EV
+RIVN,EV
 IONQ,Quantum Computing
 RGTI,Quantum Computing
 SPY,Indices & ETFs
