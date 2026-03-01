@@ -49,7 +49,7 @@ async def run_backtest():
                     
                     # Learning & Closing Logic
                     days_open = (datetime.now() - entry_date).days
-                    if days_open >= 3 or abs(p_l) >= 20:
+                    if days_open >= 7 or abs(p_l) >= 20:
                         df.at[idx, 'status'] = 'CLOSED'
                         update_pattern_outcome(ticker, t_type, p_l)
                         
