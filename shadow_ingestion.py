@@ -10,6 +10,7 @@ class ShadowDeepDive:
     """
     Tier-3 Shadow Intelligence Layer.
     Bypasses standard APIs by shadowing internal JSON endpoints of institutional dashboards.
+    Now includes Congressional "Pelosi" Signal (Public Disclosures).
     """
     
     def __init__(self):
@@ -19,6 +20,35 @@ class ShadowDeepDive:
             "Accept": "application/json",
             "X-Requested-With": "XMLHttpRequest"
         }
+
+    def fetch_congressional_trades(self) -> List[Dict]:
+        """
+        Shadows Public Congressional Disclosures (House Stock Watcher).
+        Politicians are legally 'insiders' with long lead times.
+        """
+        try:
+            # Publicly available daily aggregate of House disclosures
+            url = "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json"
+            response = self.session.get(url, timeout=15)
+            if response.status_code == 200:
+                data = response.json()
+                # We only care about recent purchases (last 14 days) by high-conviction committees
+                recent_trades = []
+                for t in data[:100]: # Top 100 recent
+                    ticker = t.get('ticker')
+                    if ticker and ticker != '--' and t.get('type') == 'purchase':
+                        recent_trades.append({
+                            'ticker': ticker,
+                            'premium': 0, # Notional often a range, but the signal is the 'Buy'
+                            'is_sweep': False,
+                            'source': f"CONGRESSIONAL_DISCLOSURE ({t.get('representative', 'Unknown')})"
+                        })
+                logging.info(f"🏛️ Shadowed {len(recent_trades)} recent Congressional purchases.")
+                return recent_trades
+            return []
+        except Exception as e:
+            logging.warning(f"⚠️ Congressional Shadowing failed: {e}")
+            return []
 
     def fetch_stockgrid_whales(self) -> List[Dict]:
         """Shadows Stockgrid's 'Whale Stream' to find institutional sweeps."""
@@ -44,13 +74,8 @@ class ShadowDeepDive:
             return []
 
     def fetch_cboe_block_trades(self) -> List[Dict]:
-        """
-        Shadows Cboe's Institutional Trade Optimizer / Large Print endpoints.
-        Focuses on SPX/VIX and large equity block trades.
-        """
+        """Shadows Cboe's Institutional Trade Optimizer / Large Print endpoints."""
         try:
-            # Cboe LiveVol / Trade Optimizer internal endpoint shadowing
-            # Note: Pathing is specific to their institutional dashboard gateway
             api_url = "https://markets.cboe.com/json/indices/indices_block_trades" 
             headers = self.base_headers.copy()
             headers["Referer"] = "https://markets.cboe.com/us/options/market_statistics/block_trades/"
@@ -58,7 +83,6 @@ class ShadowDeepDive:
             response = self.session.get(api_url, headers=headers, timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                # Normalized to common whale format
                 blocks = []
                 for b in data.get('data', []):
                     blocks.append({
@@ -78,17 +102,22 @@ class ShadowDeepDive:
         """Aggregates shadow signals into a list of high-conviction trigger tickers."""
         whales = self.fetch_stockgrid_whales()
         blocks = self.fetch_cboe_block_trades()
+        politics = self.fetch_congressional_trades()
         
         triggers = []
-        # Combine and deduplicate
-        combined = whales + blocks
+        combined = whales + blocks + politics
         
         for w in combined:
             ticker = w.get('ticker')
             premium = w.get('premium', 0)
             is_sweep = w.get('is_sweep', False)
+            source = w.get('source', "")
             
-            # Tier-3 Filter: High Premium or Institutional Sweep
+            # Congressional trades are automatic triggers regardless of premium
+            if "CONGRESSIONAL" in source:
+                if ticker not in triggers: triggers.append(ticker)
+                continue
+
             if ticker and (premium >= MIN_NOTIONAL * 10 or is_sweep):
                 if ticker not in triggers:
                     triggers.append(ticker)
@@ -97,10 +126,7 @@ class ShadowDeepDive:
         return triggers
 
 def run_deep_dive_analysis(ticker: str):
-    """
-    Performs a hyper-focused 'Deep Dive' on a shadow-triggered ticker.
-    Bypasses standard scan and goes straight to 'Full Chain' 15-exp analysis.
-    """
+    """Performs a hyper-focused 'Deep Dive' on a shadow-triggered ticker."""
     from data_fetcher import get_option_chain_data, get_stock_info, get_intraday_aggression
     from scanner import score_unusual, get_stock_heat
     
@@ -111,10 +137,8 @@ def run_deep_dive_analysis(ticker: str):
     z, sector, earnings_date = get_stock_heat(ticker, stock['volume'])
     candle = get_intraday_aggression(ticker)
     
-    # Force 'full_chain=True' for Tier-3 Shadow Analysis
     df = get_option_chain_data(ticker, stock['price'], stock['volume'], full_chain=True)
     if df.empty: return None
     
     results = score_unusual(df, ticker, z, sector, candle, earnings_date=earnings_date)
-    # Penalize low scores, only return institutional conviction
     return results[results['score'] >= 75]

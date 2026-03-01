@@ -162,11 +162,13 @@ def classify_aggression(last_price, bid, ask):
     if last_price <= bid and bid > 0: return "Passive (Bid)", 0
     return "Neutral (Mid)", 10
 
-def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_vel=0.0, earnings_date=None):
+def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_vel=0.0, earnings_date=None, congress_tickers=None):
     try:
         if df.empty: return pd.DataFrame()
         skew, contango, vol_bias = calculate_volatility_surface(df)
         
+        is_congress_buy = ticker in (congress_tickers or [])
+
         baseline = get_ticker_baseline(ticker)
         trust_mult = baseline.get('trust_score', 1.0) if baseline else 1.0
         avg_social = baseline.get('avg_social_vel', 0.0) if baseline else 0.0
@@ -227,6 +229,9 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
             if row['notional'] > 500000: score += 40
             score += agg_bonus + micro_bonus + earnings_bonus
             
+            # PELOSI SIGNAL: Congressional Buy Bonus
+            if is_congress_buy and row['side'] == 'calls': score += 60
+
             # SLINGSHOT BONUS: High Vanna + Bullish Skew + Aggressive Call Flow
             if total_vanna > 500000 and row['side'] == 'calls' and skew < -0.05: score += 45
             
@@ -255,7 +260,7 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
                     'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
                     'hype_z': round(hype_z, 1),
                     'earnings_dte': days_to_earnings, 'weekly_count': campaign_count,
-                    'detection_reason': f"Score {score} | {hvn_label} | {'SLINGSHOT' if total_vanna > 500000 else vol_bias}"
+                    'detection_reason': f"Score {score} | {'CONGRESS' if is_congress_buy else 'Isolated'} | {'SLINGSHOT' if total_vanna > 500000 else vol_bias}"
                 })
         return pd.DataFrame(results)
     except Exception as e:

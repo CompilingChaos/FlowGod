@@ -20,7 +20,7 @@ from occ_auditor import audit_clearinghouse
 from shadow_ingestion import ShadowDeepDive, run_deep_dive_analysis
 from error_reporter import reporter
 
-async def process_ticker_sequential(ticker, sector_from_csv, is_deep_dive=False):
+async def process_ticker_sequential(ticker, sector_from_csv, is_deep_dive=False, congress_tickers=None):
     """Sequential worker function."""
     try:
         logging.info(f"Scanning {ticker} ({sector_from_csv})...")
@@ -47,8 +47,8 @@ async def process_ticker_sequential(ticker, sector_from_csv, is_deep_dive=False)
         update_historical(ticker, df)
         context = get_ticker_context(ticker, days=2)
 
-        # Scorer now handles Surface, GEX Walls, TRV, Social Hype, and Earnings
-        flags = score_unusual(df, ticker, stock_z, sector, candle, social_vel, earnings_date)
+        # Scorer now handles Surface, GEX Walls, TRV, Social Hype, Earnings, and Pelosi Signals
+        flags = score_unusual(df, ticker, stock_z, sector, candle, social_vel, earnings_date, congress_tickers=congress_tickers)
 
         trades_to_alert = []
         for _, trade in flags.iterrows():
@@ -101,23 +101,26 @@ async def scan_cycle():
     shadow = ShadowDeepDive()
     trigger_tickers = shadow.get_trigger_tickers()
     
+    # Pelosi Signal Ingestion
+    congress_data = shadow.fetch_congressional_trades()
+    congress_tickers = [t['ticker'] for t in congress_data]
+    
     watchlist_df = pd.read_csv(WATCHLIST_FILE).head(MAX_TICKERS)
     scan_list = []
     for _, row in watchlist_df.iterrows():
         scan_list.append({'ticker': row['ticker'], 'sector': row['sector'], 'is_deep': False})
     
-    # Inject Trigger Tickers at the front
+    # Inject Trigger Tickers at the front (Shadow + Congressional)
     for t in trigger_tickers:
         if t not in [s['ticker'] for s in scan_list]:
             scan_list.insert(0, {'ticker': t, 'sector': 'Unknown', 'is_deep': True})
         else:
-            # Upgrade existing ticker to Deep Dive
             for s in scan_list:
                 if s['ticker'] == t: s['is_deep'] = True
     
     all_raw_alerts = []
     for item in scan_list:
-        alerts_data = await process_ticker_sequential(item['ticker'], item['sector'], is_deep_dive=item['is_deep'])
+        alerts_data = await process_ticker_sequential(item['ticker'], item['sector'], is_deep_dive=item['is_deep'], congress_tickers=congress_tickers)
         all_raw_alerts.extend(alerts_data)
         time.sleep(random.uniform(3, 5))
 
@@ -130,7 +133,6 @@ async def scan_cycle():
         for a in all_raw_alerts:
             if a['trade']['ticker'] == trade['ticker']:
                 context = a['context']
-                # Check if this ticker was originally deep-dive triggered
                 for item in scan_list:
                     if item['ticker'] == trade['ticker'] and item['is_deep']:
                         is_shadow = True
