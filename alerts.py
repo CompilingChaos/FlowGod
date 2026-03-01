@@ -16,6 +16,9 @@ def get_ai_summary(trade, ticker_context="", macro_context=None):
         client = genai.Client(api_key=gemini_key)
         m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Neutral"}
         sys_verdict, sys_logic = generate_system_verdict(trade)
+        
+        # RAG Memory Ingestion (Tier-3)
+        rag_precedent = get_rag_context(trade['ticker'], trade['type'])
 
         prompt = f"""You are a Professional Trading Mentor. Explain this institutional flow in SIMPLE, PLAIN LANGUAGE.
 
@@ -27,21 +30,33 @@ DATA:
 - LEVELS: Ceiling ${trade['call_wall']} | Floor ${trade['put_wall']}
 - EARNINGS: {trade.get('earnings_date', 'N/A')} ({trade.get('earnings_dte', -1)} days away)
 
+HISTORICAL RAG MEMORY:
+{rag_precedent}
+
+TICKER CONTEXT (LAST 48H):
+{ticker_context}
+
+MACRO MARKET CONTEXT:
+- SPY: {m['spy']}% | VIX: {m['vix']}% | DXY: {m['dxy']}%
+- SENTIMENT: {m['sentiment']}
+
 AI INSTRUCTIONS:
-1. Explain the situation like I am a student. Avoid complex jargon like 'GEX' or 'Vanna'.
-2. Explain WHY this is happening (e.g., "Whales are betting on a big move before earnings").
-3. Explain the TARGET: Where should I look to take profit based on the Ceiling/Floor?
-4. Validate SYSTEM VERDICT: {sys_verdict}. Suggest BUY, CALL, PUT, or NEUTRAL.
+1. Identify if this trade is a REPEAT of a winning pattern based on RAG Memory.
+2. Determine if this ticker is being "Accumulated" (persistent spikes in Context) or is an isolated event.
+3. Factor in Macro Sentiment: Is this "Risk-On" flow or a defensive hedge?
+4. Explain WHY this is happening (e.g., "Whales are betting on a big move before earnings").
+5. Explain the TARGET: Where should I look to take profit based on the Ceiling/Floor?
+6. Validate SYSTEM VERDICT: {sys_verdict}. Suggest BUY, CALL, PUT, or NEUTRAL.
 
 RESPONSE SCHEMA (JSON ONLY):
 {{
   "is_unusual": boolean,
-  "confidence_score": integer,
+  "confidence_score": integer (0-100),
   "final_verdict": "BUY" | "CALL" | "PUT" | "NEUTRAL",
   "estimated_duration": "string",
   "verdict_reasoning": "Simple explanation of the verdict",
-  "category": "e.g. Earnings Bet",
-  "analysis": "Simple overview of the whale activity"
+  "category": "e.g. Earnings Bet | Institutional Accumulation | Bullish Skew",
+  "analysis": "Simple overview of why this pattern matters"
 }}"""
 
         response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt)
