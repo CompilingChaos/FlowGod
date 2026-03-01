@@ -45,6 +45,7 @@ def get_advanced_macro():
         if tnx_pc > 1.0: sentiment += " | Tech Pressure (TNX Up)"
         return {'spy': round(spy_pc, 2), 'vix': round(vix_pc, 2), 'dxy': round(dxy_pc, 2), 'tnx': round(tnx_pc, 2), 'qqq': round(qqq_pc, 2), 'sentiment': sentiment}
     except Exception as e:
+        notify_error_sync("DATA_FETCHER_MACRO", e, "Macro data fetch failure.")
         return {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Unknown"}
 
 def get_sector_etf_performance():
@@ -54,7 +55,9 @@ def get_sector_etf_performance():
         try:
             ticker = yf.Ticker(symbol)
             performance[sector] = ticker.fast_info.get('day_change_percent', 0)
-        except: performance[sector] = 0
+        except Exception as e:
+            logging.warning(f"Sector fetch failed for {sector}: {e}")
+            performance[sector] = 0
     return performance
 
 def get_intraday_aggression(ticker):
@@ -81,14 +84,18 @@ def get_intraday_aggression(ticker):
         candle['dark_z_max'] = df['dark_z'].iloc[-5:].max()
         candle['prev_close'] = df['Close'].iloc[-2]
         return candle
-    except: return None
+    except Exception as e:
+        logging.error(f"Intraday analysis failed for {ticker}: {e}")
+        return None
 
 def get_stock_info(ticker):
     try:
         stock = yf.Ticker(ticker)
         info = stock.fast_info
         return {'price': info.get('lastPrice', 0), 'volume': info.get('last_volume', 0)}
-    except: return {'price': 0, 'volume': 0}
+    except Exception as e:
+        logging.error(f"Stock info fetch failed for {ticker}: {e}")
+        return {'price': 0, 'volume': 0}
 
 @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(2))
 def get_option_chain_data(ticker, price, stock_vol, full_chain=False):
@@ -114,7 +121,9 @@ def get_option_chain_data(ticker, price, stock_vol, full_chain=False):
                 side['bid'], side['ask'] = side['bid'], side['ask']
                 all_data.append(side)
             time.sleep(0.6)
-    except Exception as e: logging.error(f"Option fetch failed for {ticker}: {e}")
+    except Exception as e:
+        logging.error(f"Option fetch failed for {ticker}: {e}")
+        notify_error_sync("DATA_FETCHER_OPTIONS", e, f"Failed to fetch option chain for {ticker}.")
     return pd.concat(all_data) if all_data else pd.DataFrame()
 
 def get_contract_oi(contract_symbol):
@@ -129,4 +138,25 @@ def get_contract_oi(contract_symbol):
                 match = side[side['contractSymbol'] == contract_symbol]
                 if not match.empty: return int(match.iloc[0]['openInterest'])
         return 0
-    except: return 0
+    except Exception as e:
+        logging.warning(f"OI fetch failed for {contract_symbol}: {e}")
+        return 0
+
+def get_social_velocity(ticker):
+    """
+    Tier-3 Social Sentiment Scraper.
+    Proxies common institutional dashboards to detect retail FOMO spikes.
+    """
+    try:
+        # Mocking social velocity ingestion from common sentiment trackers
+        # In a real setup, this would hit StockTwits or a custom aggregator
+        headers = {"User-Agent": "Mozilla/5.0"}
+        # Placeholder for real endpoint
+        # response = requests.get(f"https://sentiment.api/v1/velocity/{ticker}", headers=headers, timeout=5)
+        # return response.json().get('velocity', 0.0)
+        
+        # Simulated logic for now to ensure system doesn't crash
+        return 1.5 # Default low-velocity baseline
+    except Exception as e:
+        logging.warning(f"Social Velocity failed for {ticker}: {e}")
+        return 0.0

@@ -7,6 +7,7 @@ from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, GEMINI_API_KEY
 from google import genai
 from historical_db import get_rag_context
 from scanner import generate_system_verdict
+from error_reporter import notify_error_sync
 
 def get_ai_summary(trade, ticker_context="", macro_context=None):
     gemini_key = os.getenv("GEMINI_API_KEY")
@@ -48,20 +49,24 @@ RESPONSE SCHEMA (JSON ONLY):
         if "```json" in text: text = text.split("```json")[1].split("```")[0].strip()
         elif "```" in text: text = text.split("```")[1].split("```")[0].strip()
         return json.loads(text)
-    except: return None
+    except Exception as e:
+        logging.error(f"AI Summary failed: {e}")
+        return None
+
 async def send_alert(trade, ticker_context="", macro_context=None, is_shadow=False):
-    ai = get_ai_summary(trade, ticker_context, macro_context)
-    if ai and not ai.get("is_unusual", True): return False
+    try:
+        ai = get_ai_summary(trade, ticker_context, macro_context)
+        if ai and not ai.get("is_unusual", True): return False
 
-    bot = Bot(token=TELEGRAM_TOKEN)
-    stars = "⭐" * (ai['confidence_score'] // 20) if ai and 'confidence_score' in ai else "N/A"
+        bot = Bot(token=TELEGRAM_TOKEN)
+        stars = "⭐" * (ai['confidence_score'] // 20) if ai and 'confidence_score' in ai else "N/A"
 
-    sys_v, sys_l = generate_system_verdict(trade)
-    final_v = ai['final_verdict'] if ai and 'final_verdict' in ai else sys_v
+        sys_v, sys_l = generate_system_verdict(trade)
+        final_v = ai['final_verdict'] if ai and 'final_verdict' in ai else sys_v
 
-    shadow_label = "🕵️ SHADOW TRIGGERED 🕵️\n" if is_shadow else ""
+        shadow_label = "🕵️ SHADOW TRIGGERED 🕵️\n" if is_shadow else ""
 
-    msg = f"""🚨 FLOWGOD ALPHA: {trade['ticker']} 🚨
+        msg = f"""🚨 FLOWGOD ALPHA: {trade['ticker']} 🚨
 {shadow_label}💎 Current Price: ${trade['underlying_price']:.2f}
 {stars} (Conviction: {ai['confidence_score'] if ai and 'confidence_score' in ai else '??'}%)
 
@@ -95,20 +100,23 @@ Hype Z-Score: {trade.get('hype_z', 0)} ({'LOUD/FOMO' if trade.get('hype_z',0) > 
 🧠 AI ANALYST:
 Analysis: {ai['analysis'] if ai and 'analysis' in ai else 'N/A'}"""
 
-    cb_data = f"save|{trade['ticker']}|{trade['type']}|{trade['strike']}|{trade['underlying_price']}"
-    keyboard = [[InlineKeyboardButton("💾 SAVE TRADE", callback_data=cb_data)]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+        cb_data = f"save|{trade['ticker']}|{trade['type']}|{trade['strike']}|{trade['underlying_price']}"
+        keyboard = [[InlineKeyboardButton("💾 SAVE TRADE", callback_data=cb_data)]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-    try:
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, reply_markup=reply_markup)
         return True
     except Exception as e:
-        logging.error(f"Telegram failed: {e}")
+        logging.error(f"Telegram alert failed: {e}")
+        notify_error_sync("ALERTS_SEND", e, f"Failed to send alert for {trade['ticker']}")
         return False
 
 async def send_confirmation_alert(ticker, contract, oi_change, percentage):
-    bot = Bot(token=TELEGRAM_TOKEN)
-    msg = f"""✅ WHALE CONFIRMED: {ticker} ✅
+    try:
+        bot = Bot(token=TELEGRAM_TOKEN)
+        msg = f"""✅ WHALE CONFIRMED: {ticker} ✅
 Position on {contract} was HELD overnight (+{oi_change:,} OI)."""
-    try: await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-    except: pass
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+    except Exception as e:
+        logging.error(f"Confirmation alert failed: {e}")
+        notify_error_sync("ALERTS_CONFIRM", e, f"Failed to send confirmation for {ticker}")

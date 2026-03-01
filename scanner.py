@@ -6,6 +6,7 @@ from scipy.stats import norm
 from historical_db import get_stats, get_ticker_baseline, get_weekly_campaign_stats
 from config import MIN_VOLUME, MIN_NOTIONAL, MIN_VOL_OI_RATIO, MIN_RELATIVE_VOL, MIN_STOCK_Z_SCORE
 from datetime import datetime
+from error_reporter import notify_error_sync
 
 def get_stock_heat(ticker, live_vol):
     baseline = get_ticker_baseline(ticker)
@@ -121,129 +122,141 @@ def classify_aggression(last_price, bid, ask):
     return "Neutral (Mid)", 10
 
 def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_vel=0.0, earnings_date=None):
-    if df.empty: return pd.DataFrame()
-    skew, contango, vol_bias = calculate_volatility_surface(df)
-    
-    # Defensive Baseline Retrieval
-    baseline = get_ticker_baseline(ticker)
-    trust_mult = baseline.get('trust_score', 1.0) if baseline else 1.0
-    avg_social = baseline.get('avg_social_vel', 0.0) if baseline else 0.0
-    hype_z = (social_vel / (avg_social + 0.1)) if avg_social > 0 else 0.0
-    
-    # Tier-4 Weekly Campaign Stats
-    weekly_calls = get_weekly_campaign_stats(ticker, 'CALLS')
-    weekly_puts = get_weekly_campaign_stats(ticker, 'PUTS')
-
-    # 1. Microstructure & Earnings Catalyst
-    micro_label, micro_bonus = detect_microstructure_conviction(candle_df)
-    earnings_bonus, days_to_earnings = 0, -1
-    if earnings_date:
-        try:
-            e_date = datetime.strptime(earnings_date, '%Y-%m-%d').date()
-            days_to_earnings = (e_date - datetime.now().date()).days
-            if 0 <= days_to_earnings <= 7: earnings_bonus = 50 
-        except: pass
-
-    for idx, row in df.iterrows():
-        T = max(0.001, row['dte']) / 365.0
-        d, g, v, c, color = calculate_greeks(row['underlying_price'], row['strike'], T, 0.045, row['impliedVolatility'], row['side'])
-        df.at[idx, 'delta'], df.at[idx, 'gamma'], df.at[idx, 'vanna'], df.at[idx, 'charm'], df.at[idx, 'color'] = d, g, v, c, color
-        df.at[idx, 'gex'] = g * row['openInterest'] * 100 * row['underlying_price']
-        df.at[idx, 'decay_vel'] = color * row['openInterest'] * 100
-
-    call_wall, put_wall, flip = map_gex_walls(df)
-    total_decay_vel = int(df['decay_vel'].sum())
-    spot = df.iloc[0]['underlying_price']
-    trend_p = predict_trend_probability(candle_df, call_wall, put_wall)
-    
-    results = []
-    for _, row in df.iterrows():
-        agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
-        hvn_conv, hvn_label = calculate_hvn_conviction(candle_df, row['side'].upper(), spot)
-        iv = row.get('impliedVolatility', 0)
-        expiration = row.get('exp') or row.get('expiration') or "N/A"
+    try:
+        if df.empty: return pd.DataFrame()
+        skew, contango, vol_bias = calculate_volatility_surface(df)
         
-        is_cheap_put = (row['side'] == 'puts') and (iv < 0.45) 
-        is_skew_inverted = (row['side'] == 'puts') and (skew > 0.12)
+        # Defensive Baseline Retrieval
+        baseline = get_ticker_baseline(ticker)
+        trust_mult = baseline.get('trust_score', 1.0) if baseline else 1.0
+        avg_social = baseline.get('avg_social_vel', 0.0) if baseline else 0.0
+        hype_z = (social_vel / (avg_social + 0.1)) if avg_social > 0 else 0.0
         
-        score = 0
-        if row['volume'] > 1000: score += 20
-        if row['notional'] > 500000: score += 40
-        score += agg_bonus + micro_bonus + earnings_bonus
-        if trend_p > 0.85: score += 30 
-        if is_cheap_put: score += 45 
-        if is_skew_inverted: score += 55 
-        if abs(spot - call_wall) / spot < 0.01: score -= 30
-        if (vol_bias == "BULLISH" and row['side'] == 'calls') or (vol_bias == "BEARISH" and row['side'] == 'puts'): score += 40
-        
-        campaign_count = weekly_calls if row['side'] == 'calls' else weekly_puts
-        if campaign_count >= 3: score += 40
-        if campaign_count >= 5: score += 60
+        # Tier-4 Weekly Campaign Stats
+        weekly_calls = get_weekly_campaign_stats(ticker, 'CALLS')
+        weekly_puts = get_weekly_campaign_stats(ticker, 'PUTS')
 
-        score = int(score * trust_mult * hvn_conv)
-        if (row['volume'] > row['openInterest'] and row['volume'] > 500) or score >= 85:
-            results.append({
-                'ticker': ticker, 'contract': row['contractSymbol'], 'type': row['side'].upper(),
-                'strike': row['strike'], 'exp': expiration, 'volume': int(row['volume']),
-                'oi': int(row['openInterest']), 'premium': round(row['lastPrice'], 2),
-                'notional': int(row['notional']), 'rel_vol': round(row['volume']/(get_stats(ticker, row['contractSymbol'])['avg_vol']+1), 1),
-                'delta': row['delta'], 'gamma': row['gamma'], 'vanna': row['vanna'], 'charm': row['charm'],
-                'gex': int(row['gex']), 'decay_vel': total_decay_vel, 'call_wall': call_wall, 'put_wall': put_wall, 'flip': flip,
-                'skew': skew, 'bias': vol_bias, 'score': score, 'trend_prob': trend_p,
-                'aggression': f"{agg_label} | {micro_label} | {hvn_label}",
-                'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
-                'hype_z': round(hype_z, 1),
-                'earnings_dte': days_to_earnings, 'weekly_count': campaign_count,
-                'detection_reason': f"Score {score} | {hvn_label} | {'CAMPAIGN' if campaign_count >= 3 else vol_bias}"
-            })
-    return pd.DataFrame(results)
+        # 1. Microstructure & Earnings Catalyst
+        micro_label, micro_bonus = detect_microstructure_conviction(candle_df)
+        earnings_bonus, days_to_earnings = 0, -1
+        if earnings_date:
+            try:
+                e_date = datetime.strptime(earnings_date, '%Y-%m-%d').date()
+                days_to_earnings = (e_date - datetime.now().date()).days
+                if 0 <= days_to_earnings <= 7: earnings_bonus = 50 
+            except: pass
+
+        for idx, row in df.iterrows():
+            T = max(0.001, row['dte']) / 365.0
+            d, g, v, c, color = calculate_greeks(row['underlying_price'], row['strike'], T, 0.045, row['impliedVolatility'], row['side'])
+            df.at[idx, 'delta'], df.at[idx, 'gamma'], df.at[idx, 'vanna'], df.at[idx, 'charm'], df.at[idx, 'color'] = d, g, v, c, color
+            df.at[idx, 'gex'] = g * row['openInterest'] * 100 * row['underlying_price']
+            df.at[idx, 'decay_vel'] = color * row['openInterest'] * 100
+
+        call_wall, put_wall, flip = map_gex_walls(df)
+        total_decay_vel = int(df['decay_vel'].sum())
+        spot = df.iloc[0]['underlying_price']
+        trend_p = predict_trend_probability(candle_df, call_wall, put_wall)
+        
+        results = []
+        for _, row in df.iterrows():
+            agg_label, agg_bonus = classify_aggression(row['lastPrice'], row['bid'], row['ask'])
+            hvn_conv, hvn_label = calculate_hvn_conviction(candle_df, row['side'].upper(), spot)
+            iv = row.get('impliedVolatility', 0)
+            expiration = row.get('exp') or row.get('expiration') or "N/A"
+            
+            is_cheap_put = (row['side'] == 'puts') and (iv < 0.45) 
+            is_skew_inverted = (row['side'] == 'puts') and (skew > 0.12)
+            
+            score = 0
+            if row['volume'] > 1000: score += 20
+            if row['notional'] > 500000: score += 40
+            score += agg_bonus + micro_bonus + earnings_bonus
+            if trend_p > 0.85: score += 30 
+            if is_cheap_put: score += 45 
+            if is_skew_inverted: score += 55 
+            if abs(spot - call_wall) / spot < 0.01: score -= 30
+            if (vol_bias == "BULLISH" and row['side'] == 'calls') or (vol_bias == "BEARISH" and row['side'] == 'puts'): score += 40
+            
+            campaign_count = weekly_calls if row['side'] == 'calls' else weekly_puts
+            if campaign_count >= 3: score += 40
+            if campaign_count >= 5: score += 60
+
+            score = int(score * trust_mult * hvn_conv)
+            if (row['volume'] > row['openInterest'] and row['volume'] > 500) or score >= 85:
+                results.append({
+                    'ticker': ticker, 'contract': row['contractSymbol'], 'type': row['side'].upper(),
+                    'strike': row['strike'], 'exp': expiration, 'volume': int(row['volume']),
+                    'oi': int(row['openInterest']), 'premium': round(row['lastPrice'], 2),
+                    'notional': int(row['notional']), 'rel_vol': round(row['volume']/(get_stats(ticker, row['contractSymbol'])['avg_vol']+1), 1),
+                    'delta': row['delta'], 'gamma': row['gamma'], 'vanna': row['vanna'], 'charm': row['charm'],
+                    'gex': int(row['gex']), 'decay_vel': total_decay_vel, 'call_wall': call_wall, 'put_wall': put_wall, 'flip': flip,
+                    'skew': skew, 'bias': vol_bias, 'score': score, 'trend_prob': trend_p,
+                    'aggression': f"{agg_label} | {micro_label} | {hvn_label}",
+                    'sector': sector, 'bid': row['bid'], 'ask': row['ask'], 'underlying_price': spot,
+                    'hype_z': round(hype_z, 1),
+                    'earnings_dte': days_to_earnings, 'weekly_count': campaign_count,
+                    'detection_reason': f"Score {score} | {hvn_label} | {'CAMPAIGN' if campaign_count >= 3 else vol_bias}"
+                })
+        return pd.DataFrame(results)
+    except Exception as e:
+        logging.error(f"Scoring failure for {ticker}: {e}")
+        notify_error_sync("SCANNER_SCORE", e, f"Critical failure in unusual scoring for {ticker}.")
+        return pd.DataFrame()
 
 def generate_system_verdict(trade):
-    t_type, spot = trade['type'], trade.get('underlying_price', 0)
-    call_wall, put_wall = trade.get('call_wall', 0), trade.get('put_wall', 0)
-    skew, agg, trend_p = trade.get('skew', 0), trade.get('aggression', ""), trade.get('trend_prob', 0.5)
-    e_dte, w_count = trade.get('earnings_dte', -1), trade.get('weekly_count', 0)
-    verdict, logic = "NEUTRAL", "Low conviction."
-    if "CALL" in t_type and "Aggressive" in agg:
-        if w_count >= 3: verdict, logic = "CALL (Long)", f"Active Weekly Campaign ({w_count} alerts). Massive institutional scaling."
-        elif 0 <= e_dte <= 7: verdict, logic = "CALL (Long)", f"Earnings Front-Running ({e_dte}d). High Gamma setup."
-        elif trend_p > 0.8: verdict, logic = "CALL (Long)", f"Aggressive sweep + Trend Prob ({trend_p*100}%)."
-        elif skew < 0: verdict, logic = "CALL (Long)", "Aggressive sweep + Bullish Skew."
-        elif spot > 0 and put_wall > 0 and (spot - put_wall) / spot < 0.02: verdict, logic = "CALL (Long)", "Support bounce at Put Wall."
-        else: verdict, logic = "BUY (Stock)", "Bullish flow, conservative tech."
-    elif "PUT" in t_type and "Aggressive" in agg:
-        if w_count >= 3: verdict, logic = "PUT (Short)", f"Active Weekly Campaign ({w_count} alerts). Bearish institutional scaling."
-        elif 0 <= e_dte <= 7: verdict, logic = "PUT (Short)", f"Earnings Front-Running ({e_dte}d). Bearish insider flow."
-        elif trend_p > 0.8: verdict, logic = "PUT (Short)", f"Aggressive sweep + Trend Prob ({trend_p*100}%)."
-        else: verdict, logic = "PUT (Short)", "Bearish flow detected."
-    elif "Dark Pool" in agg or "ICEBERG" in agg: verdict, logic = "BUY (Stock)", "Institutional absorption."
-    return verdict, logic
+    try:
+        t_type, spot = trade['type'], trade.get('underlying_price', 0)
+        call_wall, put_wall = trade.get('call_wall', 0), trade.get('put_wall', 0)
+        skew, agg, trend_p = trade.get('skew', 0), trade.get('aggression', ""), trade.get('trend_prob', 0.5)
+        e_dte, w_count = trade.get('earnings_dte', -1), trade.get('weekly_count', 0)
+        verdict, logic = "NEUTRAL", "Low conviction."
+        if "CALL" in t_type and "Aggressive" in agg:
+            if w_count >= 3: verdict, logic = "CALL (Long)", f"Active Weekly Campaign ({w_count} alerts). Massive institutional scaling."
+            elif 0 <= e_dte <= 7: verdict, logic = "CALL (Long)", f"Earnings Front-Running ({e_dte}d). High Gamma setup."
+            elif trend_p > 0.8: verdict, logic = "CALL (Long)", f"Aggressive sweep + Trend Prob ({trend_p*100}%)."
+            elif skew < 0: verdict, logic = "CALL (Long)", "Aggressive sweep + Bullish Skew."
+            elif spot > 0 and put_wall > 0 and (spot - put_wall) / spot < 0.02: verdict, logic = "CALL (Long)", "Support bounce at Put Wall."
+            else: verdict, logic = "BUY (Stock)", "Bullish flow, conservative tech."
+        elif "PUT" in t_type and "Aggressive" in agg:
+            if w_count >= 3: verdict, logic = "PUT (Short)", f"Active Weekly Campaign ({w_count} alerts). Bearish institutional scaling."
+            elif 0 <= e_dte <= 7: verdict, logic = "PUT (Short)", f"Earnings Front-Running ({e_dte}d). Bearish insider flow."
+            elif trend_p > 0.8: verdict, logic = "PUT (Short)", f"Aggressive sweep + Trend Prob ({trend_p*100}%)."
+            else: verdict, logic = "PUT (Short)", "Bearish flow detected."
+        elif "Dark Pool" in agg or "ICEBERG" in agg: verdict, logic = "BUY (Stock)", "Institutional absorption."
+        return verdict, logic
+    except: return "NEUTRAL", "Logic failure."
 
 def process_results(all_results, macro_context, sector_performance):
-    if not all_results: return []
-    df = pd.DataFrame(all_results)
-    linked_alerts = []
-    for (ticker, exp), group in df.groupby(['ticker', 'exp']):
-        if len(group) >= 2:
-            for side in ['CALLS', 'PUTS']:
-                legs = group[group['type'] == side].sort_values('strike')
-                if len(legs) >= 2:
-                    leg1, leg2 = legs.iloc[0], legs.iloc[1]
-                    if abs(leg1['volume'] - leg2['volume']) / max(leg1['volume'], 1) < 0.2:
-                        best_leg = legs.loc[legs['score'].idxmax()].to_dict()
-                        best_leg['type'] = f"🔗 {side[:-1]} SPREAD"
-                        best_leg['strike'] = f"{leg1['strike']} / {leg2['strike']}"
-                        best_leg['notional'] = legs['notional'].sum()
-                        best_leg['score'] += 40
-                        linked_alerts.append(best_leg)
-                        df = df[~df['contract'].isin(legs['contractSymbol'])]
-    final_alerts = linked_alerts
-    for ticker, t_group in df.groupby('ticker'):
-        if len(t_group) >= 3:
-            best = t_group.loc[t_group['score'].idxmax()].to_dict()
-            best['type'] = "📦 CLUSTER 📦"
-            best['notional'], best['volume'] = t_group['notional'].sum(), t_group['volume'].sum()
-            best['score'] += 50
-            final_alerts.append(best)
-        else: final_alerts.extend(t_group.to_dict('records'))
-    return final_alerts
+    try:
+        if not all_results: return []
+        df = pd.DataFrame(all_results)
+        linked_alerts = []
+        for (ticker, exp), group in df.groupby(['ticker', 'exp']):
+            if len(group) >= 2:
+                for side in ['CALLS', 'PUTS']:
+                    legs = group[group['type'] == side].sort_values('strike')
+                    if len(legs) >= 2:
+                        leg1, leg2 = legs.iloc[0], legs.iloc[1]
+                        if abs(leg1['volume'] - leg2['volume']) / max(leg1['volume'], 1) < 0.2:
+                            best_leg = legs.loc[legs['score'].idxmax()].to_dict()
+                            best_leg['type'] = f"🔗 {side[:-1]} SPREAD"
+                            best_leg['strike'] = f"{leg1['strike']} / {leg2['strike']}"
+                            best_leg['notional'] = legs['notional'].sum()
+                            best_leg['score'] += 40
+                            linked_alerts.append(best_leg)
+                            df = df[~df['contract'].isin(legs['contractSymbol'])]
+        final_alerts = linked_alerts
+        for ticker, t_group in df.groupby('ticker'):
+            if len(t_group) >= 3:
+                best = t_group.loc[t_group['score'].idxmax()].to_dict()
+                best['type'] = "📦 CLUSTER 📦"
+                best['notional'], best['volume'] = t_group['notional'].sum(), t_group['volume'].sum()
+                best['score'] += 50
+                final_alerts.append(best)
+            else: final_alerts.extend(t_group.to_dict('records'))
+        return final_alerts
+    except Exception as e:
+        logging.error(f"Result processing failed: {e}")
+        notify_error_sync("SCANNER_PROCESS", e, "Critical failure during spread/cluster linking.")
+        return all_results

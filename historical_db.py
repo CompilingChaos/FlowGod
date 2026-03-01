@@ -6,6 +6,7 @@ import logging
 import re
 from datetime import datetime, timedelta
 from config import DB_FILE
+from error_reporter import notify_error_sync
 
 HISTORICAL_CSV = "historical_data.csv"
 
@@ -31,6 +32,7 @@ def init_db():
         return conn
     except Exception as e:
         logging.error(f"DB Init Error: {e}")
+        notify_error_sync("DB_INIT", e, "Critical failure initializing SQLite database.")
         return None
 
 def update_ticker_baseline(ticker, avg_vol, std_dev, sector="Unknown", social_vel=0.0, earnings_date=None):
@@ -46,6 +48,9 @@ def update_ticker_baseline(ticker, avg_vol, std_dev, sector="Unknown", social_ve
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                      (ticker, avg_vol, std_dev, sector, current_trust, new_social, final_earnings, datetime.now().isoformat()))
         conn.commit()
+    except Exception as e:
+        logging.error(f"Update baseline failed for {ticker}: {e}")
+        notify_error_sync("DB_UPDATE_BASELINE", e, f"Failed to update baseline for {ticker}")
     finally:
         conn.close()
 
@@ -56,6 +61,9 @@ def get_ticker_baseline(ticker):
         res = conn.execute("SELECT avg_vol, std_dev, sector, trust_score, avg_social_vel, earnings_date FROM ticker_stats WHERE ticker = ?", (ticker,)).fetchone()
         if res:
             return {'avg_vol': res[0], 'std_dev': res[1], 'sector': res[2], 'trust_score': res[3], 'avg_social_vel': res[4], 'earnings_date': res[5]}
+        return None
+    except Exception as e:
+        logging.error(f"Get baseline failed for {ticker}: {e}")
         return None
     finally:
         conn.close()
@@ -68,6 +76,8 @@ def update_trust_score(ticker, change):
         conn.execute("UPDATE ticker_stats SET trust_score = 2.0 WHERE trust_score > 2.0")
         conn.execute("UPDATE ticker_stats SET trust_score = 0.5 WHERE trust_score < 0.5")
         conn.commit()
+    except Exception as e:
+        logging.error(f"Trust score update failed: {e}")
     finally:
         conn.close()
 
@@ -80,6 +90,9 @@ def mark_alert_sent(contract, ticker="", trade_type="", vol=0, oi=0, price=0):
                      VALUES (?, ?, ?, ?, ?, ?, ?, 0)""",
                      (contract, datetime.now().isoformat(), ticker, trade_type, vol, oi, price))
         conn.commit()
+    except Exception as e:
+        logging.error(f"Mark alert sent failed: {e}")
+        notify_error_sync("DB_MARK_ALERT", e, f"Failed to log sent alert for {contract}")
     finally:
         conn.close()
 
@@ -99,7 +112,9 @@ def get_rag_context(ticker, trade_type):
         win_rate = (df['outcome_3d'] > 0).mean() if trade_type == 'CALLS' else (df['outcome_3d'] < 0).mean()
         avg_move = df['outcome_3d'].mean() * 100
         return f"RAG PRECEDENT: Last 10 similar {trade_type} on {ticker} had a {win_rate:.0%} win rate. Avg 3-day move: {avg_move:.1f}%."
-    except: return "Memory system unavailable."
+    except Exception as e: 
+        logging.error(f"RAG fetch failed: {e}")
+        return "Memory system unavailable."
 
 def get_weekly_campaign_stats(ticker, trade_type):
     """Counts how many times this ticker/type was alerted in the last 7 days."""
@@ -119,6 +134,9 @@ def get_unconfirmed_alerts():
         cutoff = (datetime.now() - timedelta(hours=48)).isoformat()
         res = conn.execute("SELECT contract, alert_vol, alert_oi FROM alerts_sent WHERE confirmed = 0 AND timestamp > ?", (cutoff,)).fetchall()
         return res
+    except Exception as e:
+        logging.error(f"Unconfirmed alerts fetch failed: {e}")
+        return []
     finally:
         conn.close()
 
@@ -128,6 +146,8 @@ def mark_alert_confirmed(contract, status=1):
     try:
         conn.execute("UPDATE alerts_sent SET confirmed = ? WHERE contract = ?", (status, contract))
         conn.commit()
+    except Exception as e:
+        logging.error(f"Mark alert confirmed failed: {e}")
     finally:
         conn.close()
 
@@ -139,6 +159,7 @@ def needs_baseline_update(ticker):
         if not res: return True
         last_updated = datetime.fromisoformat(res[0]).date()
         return last_updated < datetime.now().date()
+    except: return True
     finally:
         conn.close()
 
@@ -152,6 +173,7 @@ def load_from_csv():
                 conn.close()
         except Exception as e:
             logging.error(f"Error loading CSV: {e}")
+            notify_error_sync("DB_LOAD_CSV", e, "Failed to load historical data from CSV.")
 
 def save_to_csv():
     conn = init_db()
@@ -163,6 +185,7 @@ def save_to_csv():
         conn.close()
     except Exception as e:
         logging.error(f"Error saving CSV: {e}")
+        notify_error_sync("DB_SAVE_CSV", e, "Failed to persist database to CSV.")
 
 def get_ticker_context(ticker, days=2):
     conn = init_db()
@@ -186,15 +209,19 @@ def get_ticker_context(ticker, days=2):
 def update_historical(ticker, chain_df):
     conn = init_db()
     if not conn: return
-    today = datetime.now().date().isoformat()
-    for _, row in chain_df.iterrows():
-        contract = row['contractSymbol']
-        vol = 0 if pd.isna(row.get('volume')) else int(row['volume'])
-        oi = 0 if pd.isna(row.get('openInterest')) else int(row['openInterest'])
-        conn.execute("INSERT OR REPLACE INTO hist_vol_oi VALUES (?,?,?,?,?)",
-                     (ticker, contract, today, vol, oi))
-    conn.commit()
-    conn.close()
+    try:
+        today = datetime.now().date().isoformat()
+        for _, row in chain_df.iterrows():
+            contract = row['contractSymbol']
+            vol = 0 if pd.isna(row.get('volume')) else int(row['volume'])
+            oi = 0 if pd.isna(row.get('openInterest')) else int(row['openInterest'])
+            conn.execute("INSERT OR REPLACE INTO hist_vol_oi VALUES (?,?,?,?,?)",
+                         (ticker, contract, today, vol, oi))
+        conn.commit()
+    except Exception as e:
+        logging.error(f"Historical update failed: {e}")
+    finally:
+        conn.close()
 
 def get_stats(ticker, contract, days=30):
     conn = init_db()
@@ -218,9 +245,12 @@ def get_stats(ticker, contract, days=30):
 def is_alert_sent(contract):
     conn = init_db()
     if not conn: return False
-    cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
-    conn.execute("DELETE FROM alerts_sent WHERE timestamp < ?", (cutoff,))
-    conn.commit()
-    res = conn.execute("SELECT 1 FROM alerts_sent WHERE contract = ?", (contract,)).fetchone()
-    conn.close()
-    return res is not None
+    try:
+        cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+        conn.execute("DELETE FROM alerts_sent WHERE timestamp < ?", (cutoff,))
+        conn.commit()
+        res = conn.execute("SELECT 1 FROM alerts_sent WHERE contract = ?", (contract,)).fetchone()
+        return res is not None
+    except: return False
+    finally:
+        conn.close()
