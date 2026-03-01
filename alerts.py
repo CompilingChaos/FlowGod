@@ -5,14 +5,47 @@ import json
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, GEMINI_API_KEY, GEMINI_API_KEY_FALLBACK
 from google import genai
+from google.genai import types
 from historical_db import get_rag_context
 from scanner import generate_system_verdict
 from error_reporter import notify_error_sync
 
+def get_ticker_news(ticker, keys):
+    """
+    Tier-4 Discovery: Real-Time News Grounding.
+    Uses Gemini with Google Search to find catalysts from the last 24-48 hours.
+    """
+    for idx, key in enumerate(keys):
+        if not key: continue
+        try:
+            client = genai.Client(api_key=key)
+            # Use Google Search tool for grounding
+            google_search_tool = types.Tool(google_search=types.GoogleSearch())
+            
+            prompt = f"Search for and summarize the most important news for ${ticker} from the last 24 hours. Focus on earnings, rumors, M&A, or analyst upgrades. If no major news exists in the last 24 hours, respond exactly with 'NO_RECENT_NEWS'."
+            
+            response = client.models.generate_content(
+                model="gemini-3-flash-preview", 
+                contents=prompt,
+                config=types.GenerateContentConfig(tools=[google_search_tool])
+            )
+            
+            news = response.text.strip()
+            if "NO_RECENT_NEWS" in news: return "No major news catalysts detected in the last 24 hours."
+            return news
+        except Exception as e:
+            logging.warning(f"News Search attempt {idx+1} failed: {e}")
+            continue
+    return "News grounding unavailable."
+
 def get_ai_summary(trade, ticker_context="", macro_context=None):
     keys = [GEMINI_API_KEY, GEMINI_API_KEY_FALLBACK]
+    
+    # Phase 1: Real-Time News Search
+    news_context = get_ticker_news(trade['ticker'], keys)
+    
+    # Phase 2: Final Evaluation
     last_error = None
-
     for idx, key in enumerate(keys):
         if not key: continue
         try:
@@ -20,7 +53,6 @@ def get_ai_summary(trade, ticker_context="", macro_context=None):
             m = macro_context or {'spy': 0, 'vix': 0, 'dxy': 0, 'tnx': 0, 'qqq': 0, 'sentiment': "Neutral"}
             sys_verdict, sys_logic = generate_system_verdict(trade)
             
-            # RAG Memory Ingestion (Tier-3)
             rag_precedent = get_rag_context(trade['ticker'], trade['type'])
 
             prompt = f"""You are a Professional Trading Mentor. Explain this institutional flow in SIMPLE, PLAIN LANGUAGE.
@@ -34,6 +66,9 @@ DATA:
 - EARNINGS: {trade.get('earnings_date', 'N/A')} ({trade.get('earnings_dte', -1)} days away)
 - SEC SIGNAL: {trade.get('sec_signal', 'N/A')}
 
+REAL-TIME NEWS CONTEXT:
+{news_context}
+
 HISTORICAL RAG MEMORY:
 {rag_precedent}
 
@@ -45,13 +80,12 @@ MACRO MARKET CONTEXT:
 - SENTIMENT: {m['sentiment']}
 
 AI INSTRUCTIONS:
-1. Check if the SEC SIGNAL confirms insider conviction (e.g. GHOST ECHO).
-2. Identify if this trade is a REPEAT of a winning pattern based on RAG Memory.
-3. Determine if this ticker is being "Accumulated" (persistent spikes in Context) or is an isolated event.
+1. Use the REAL-TIME NEWS CONTEXT to explain WHY this flow is happening.
+2. Check if the SEC SIGNAL confirms insider conviction (e.g. GHOST ECHO).
+3. Identify if this trade is a REPEAT of a winning pattern based on RAG Memory.
 4. Factor in Macro Sentiment: Is this "Risk-On" flow or a defensive hedge?
-5. Explain WHY this is happening (e.g., "Whales are betting on a big move before earnings").
-6. Explain the TARGET: Where should I look to take profit based on the Ceiling/Floor?
-7. Validate SYSTEM VERDICT: {sys_verdict}. Suggest BUY, CALL, PUT, or NEUTRAL.
+5. Explain the TARGET: Where should I look to take profit based on the Ceiling/Floor?
+6. Validate SYSTEM VERDICT: {sys_verdict}. Suggest BUY, CALL, PUT, or NEUTRAL.
 
 RESPONSE SCHEMA (JSON ONLY):
 {{
@@ -59,8 +93,8 @@ RESPONSE SCHEMA (JSON ONLY):
   "confidence_score": integer (0-100),
   "final_verdict": "BUY" | "CALL" | "PUT" | "NEUTRAL",
   "estimated_duration": "string",
-  "verdict_reasoning": "Simple explanation of the verdict",
-  "category": "e.g. Earnings Bet | Institutional Accumulation | Bullish Skew",
+  "verdict_reasoning": "Simple explanation of the verdict based on news and flow",
+  "category": "e.g. Earnings Bet | Institutional Accumulation | News Front-Run",
   "analysis": "Simple overview of why this pattern matters"
 }}"""
 
@@ -72,8 +106,6 @@ RESPONSE SCHEMA (JSON ONLY):
         except Exception as e:
             last_error = e
             logging.warning(f"Gemini API attempt {idx+1} failed: {e}")
-            if idx == 0 and GEMINI_API_KEY_FALLBACK:
-                logging.info("🔄 Switching to Fallback Gemini API Key...")
             continue
     
     if last_error:
