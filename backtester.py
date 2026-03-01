@@ -27,6 +27,7 @@ async def run_backtest():
         logging.info(f"Tracking performance for {len(open_trades)} trades...")
         
         summary_msg = "📈 TRADE PERFORMANCE UPDATE 📉\n\n"
+        final_reports = []
         updated = False
 
         for idx, row in open_trades.iterrows():
@@ -42,15 +43,23 @@ async def run_backtest():
                 
                 if current_price > 0:
                     p_l = ((current_price - entry_price) / entry_price) * 100
-                    if t_type == 'PUTS': p_l = -p_l # Invert for puts
+                    if t_type == 'PUTS': p_l = -p_l 
                     
                     df.at[idx, 'p_l'] = round(p_l, 2)
                     
-                    # Learning Logic: If > 3 days old or high profit/loss, close and teach the model
+                    # Learning & Closing Logic
                     days_open = (datetime.now() - entry_date).days
                     if days_open >= 3 or abs(p_l) >= 20:
                         df.at[idx, 'status'] = 'CLOSED'
                         update_pattern_outcome(ticker, t_type, p_l)
+                        
+                        # Final Notification details
+                        final_reports.append(
+                            f"🏁 FINAL OUTCOME: {ticker} {t_type} 🏁\n"
+                            f"Result: {p_l:+.2f}%\n"
+                            f"Duration: {days_open} days\n"
+                            f"Verdict: {'✅ MODEL REWARDED' if p_l > 15 else '❌ TRAP DETECTED' if p_l < -10 else '⚪ NOISE LEARNED'}"
+                        )
                         logging.info(f"🎓 Model Taught: {ticker} {t_type} outcome was {p_l:.1f}%")
 
                     status_icon = "🟢" if p_l > 0 else "🔴"
@@ -63,7 +72,13 @@ async def run_backtest():
             df.to_csv(TRADES_FILE, index=False)
             bot = Bot(token=TELEGRAM_TOKEN)
             try:
+                # 1. Send General Performance Update
                 await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=summary_msg)
+                
+                # 2. Send Final Closing Reports if any
+                for report in final_reports:
+                    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=report)
+                    
                 logging.info("Performance summary sent to Telegram.")
             except Exception as e:
                 msg = f"Failed to send backtest summary: {e}"
