@@ -9,17 +9,21 @@ from datetime import datetime
 from error_reporter import notify_error_sync
 
 def get_stock_heat(ticker, live_vol):
-    baseline = get_ticker_baseline(ticker)
-    if baseline and baseline['std_dev'] > 0:
-        z_score = (live_vol - baseline['avg_vol']) / baseline['std_dev']
-        return z_score, baseline.get('sector', 'Unknown'), baseline.get('earnings_date')
-    return 0, "Unknown", None
+    try:
+        baseline = get_ticker_baseline(ticker)
+        if baseline and baseline['std_dev'] > 0:
+            z_score = (live_vol - baseline['avg_vol']) / baseline['std_dev']
+            return z_score, baseline.get('sector', 'Unknown'), baseline.get('earnings_date')
+        return 0, "Unknown", None
+    except Exception as e:
+        notify_error_sync("SCANNER_HEAT", e, f"Failed to calculate heat for {ticker}")
+        return 0, "Unknown", None
 
 def calculate_greeks_vec(S, K, T, r, sigma, option_type='calls'):
     """Vectorized Black-Scholes Greeks calculation using NumPy."""
     try:
-        T = np.maximum(T, 0.0001) # Prevent division by zero
-        sigma = np.maximum(sigma, 0.01) # Prevent log(0)
+        T = np.maximum(T, 0.0001) 
+        sigma = np.maximum(sigma, 0.01) 
         
         d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
         d2 = d1 - sigma * np.sqrt(T)
@@ -33,14 +37,13 @@ def calculate_greeks_vec(S, K, T, r, sigma, option_type='calls'):
         vanna = (norm.pdf(d1) * d2) / sigma
         charm = -norm.pdf(d1) * (r / (sigma * np.sqrt(T)) - d2 / (2 * T))
         
-        # Vectorized Color (Gamma Decay)
         term1 = -norm.pdf(d1) / (2 * S * T * sigma * np.sqrt(T))
         term2 = 1 + (2 * r * T * d1 - d2 * sigma * np.sqrt(T)) / (sigma * np.sqrt(T))
         color = term1 * term2
         
         return np.round(delta, 3), np.round(gamma, 4), np.round(vanna, 4), np.round(charm, 4), np.round(color, 6)
     except Exception as e:
-        logging.error(f"Vectorized Greeks failure: {e}")
+        notify_error_sync("MATH_GREEKS_VEC", e, "Critical math failure in vectorized Black-Scholes.")
         return np.zeros_like(S), np.zeros_like(S), np.zeros_like(S), np.zeros_like(S), np.zeros_like(S)
 
 def calculate_volatility_surface(df):
@@ -53,17 +56,13 @@ def calculate_volatility_surface(df):
         skew = puts['impliedVolatility'].mean() - calls['impliedVolatility'].mean()
         bias = "BULLISH" if skew < -0.05 else "BEARISH" if skew > 0.10 else "NEUTRAL"
         return round(skew, 3), round(contango, 3), bias
-    except: return 0, 0, "NEUTRAL"
+    except Exception as e:
+        notify_error_sync("MATH_VOL_SURFACE", e, "Failed to map volatility surface.")
+        return 0, 0, "NEUTRAL"
 
 def map_gex_walls(df):
-    """
-    GEX 2.0 Refinement:
-    Models dealer hedging pressure by signing gamma exposures.
-    Identifies the Zero Gamma Flip point.
-    """
     if df.empty: return 0, 0, 0
     try:
-        # Sign Gamma: Calls (+) Puts (-) assuming dealer is short both (Standard GEX Model)
         df['net_gex'] = np.where(df['side'] == 'calls', 
                                  df['gamma'] * df['openInterest'] * 100 * df['underlying_price'],
                                  -df['gamma'] * df['openInterest'] * 100 * df['underlying_price'])
@@ -71,7 +70,6 @@ def map_gex_walls(df):
         strike_gex = df.groupby('strike')['net_gex'].sum()
         call_wall, put_wall = strike_gex.idxmax(), strike_gex.idxmin()
         
-        # Zero Gamma Flip Point calculation
         flip, strike_gex_sorted = 0, strike_gex.sort_index()
         for i in range(len(strike_gex_sorted)-1):
             if np.sign(strike_gex_sorted.iloc[i]) != np.sign(strike_gex_sorted.iloc[i+1]):
@@ -79,7 +77,7 @@ def map_gex_walls(df):
                 break
         return call_wall, put_wall, flip
     except Exception as e:
-        logging.error(f"GEX Wall mapping failure: {e}")
+        notify_error_sync("MATH_GEX_WALLS", e, "Failed to map GEX Walls/Flip Point.")
         return 0, 0, 0
 
 def calculate_hvn_conviction(df_1m, t_type, spot):
@@ -93,7 +91,9 @@ def calculate_hvn_conviction(df_1m, t_type, spot):
         else:
             if spot > hvn_price: conviction, label = 0.3, f"Trap: Above HVN (${hvn_price})"
         return conviction, label
-    except: return 1.0, "N/A"
+    except Exception as e:
+        notify_error_sync("MATH_HVN", e, "Failed to calculate HVN conviction.")
+        return 1.0, "N/A"
 
 def predict_trend_probability(df_1m, call_wall, put_wall):
     if df_1m is None or len(df_1m) < 30: return 0.5
@@ -105,7 +105,9 @@ def predict_trend_probability(df_1m, call_wall, put_wall):
         dist_wall = min(abs(last_p - call_wall), abs(last_p - put_wall)) / last_p
         wall_mult = 1.5 if dist_wall < 0.01 else 1.0
         return round(min(0.99, norm.cdf(z) * wall_mult), 2)
-    except: return 0.5
+    except Exception as e:
+        notify_error_sync("MATH_TREND_PROB", e, "Failed to predict trend probability.")
+        return 0.5
 
 def detect_icebergs(df_1m):
     if df_1m is None or len(df_1m) < 30: return False
@@ -118,7 +120,9 @@ def detect_icebergs(df_1m):
         vol_90 = df_1m['Volume'].quantile(0.90)
         latest = df_1m.iloc[-5:] 
         return ((latest['iceberg_z'] > 3.0) & (latest['Volume'] > vol_90)).any()
-    except: return False
+    except Exception as e:
+        notify_error_sync("MATH_ICEBERG", e, "Failed to detect iceberg orders.")
+        return False
 
 def detect_microstructure_conviction(df_1m):
     if df_1m is None or len(df_1m) < 30: return "Standard", 0
@@ -129,7 +133,9 @@ def detect_microstructure_conviction(df_1m):
         vwap = df_1m['VWAP'].iloc[-1] if 'VWAP' in df_1m.columns else last_c['Close']
         if buyer_agg > 0.8 and last_c['Close'] > vwap: return "🚀 AGGRESSIVE SWEEP 🚀", 50
         return "Passive Flow", 10
-    except: return "Unknown", 0
+    except Exception as e:
+        notify_error_sync("MATH_MICROSTRUCTURE", e, "Failed to analyze microstructure conviction.")
+        return "Unknown", 0
 
 def classify_aggression(last_price, bid, ask):
     if last_price >= ask and ask > 0: return "Aggressive (Ask)", 50
@@ -141,23 +147,19 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
         if df.empty: return pd.DataFrame()
         skew, contango, vol_bias = calculate_volatility_surface(df)
         
-        # Defensive Baseline Retrieval
         baseline = get_ticker_baseline(ticker)
         trust_mult = baseline.get('trust_score', 1.0) if baseline else 1.0
         avg_social = baseline.get('avg_social_vel', 0.0) if baseline else 0.0
         hype_z = (social_vel / (avg_social + 0.1)) if avg_social > 0 else 0.0
         
-        # Tier-4 Weekly Campaign Stats
         weekly_calls = get_weekly_campaign_stats(ticker, 'CALLS')
         weekly_puts = get_weekly_campaign_stats(ticker, 'PUTS')
 
-        # 1. Vectorized Greek Calculation (Massive Performance Boost)
         T_vec = df['dte'].values / 365.0
         S_vec = df['underlying_price'].values
         K_vec = df['strike'].values
         sigma_vec = df['impliedVolatility'].values
         
-        # We split by side for vectorized delta
         calls = df['side'] == 'calls'
         puts = df['side'] == 'puts'
         
@@ -171,7 +173,6 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
             d, g, v, c, color = calculate_greeks_vec(S_vec[puts], K_vec[puts], T_vec[puts], 0.045, sigma_vec[puts], 'puts')
             df.loc[puts, ['delta', 'gamma', 'vanna', 'charm', 'color']] = np.stack([d, g, v, c, color], axis=1)
 
-        # 2. Derived Quant Metrics
         df['gex'] = df['gamma'] * df['openInterest'] * 100 * df['underlying_price']
         df['decay_vel'] = df['color'] * df['openInterest'] * 100
         
@@ -179,7 +180,6 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
         total_decay_vel = int(df['decay_vel'].sum())
         spot = df.iloc[0]['underlying_price']
         
-        # 3. Microstructure & Earnings Catalyst
         micro_label, micro_bonus = detect_microstructure_conviction(candle_df)
         trend_p = predict_trend_probability(candle_df, call_wall, put_wall)
         
@@ -233,7 +233,6 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
                 })
         return pd.DataFrame(results)
     except Exception as e:
-        logging.error(f"Scoring failure for {ticker}: {e}")
         notify_error_sync("SCANNER_SCORE", e, f"Critical failure in unusual scoring for {ticker}.")
         return pd.DataFrame()
 
@@ -258,7 +257,9 @@ def generate_system_verdict(trade):
             else: verdict, logic = "PUT (Short)", "Bearish flow detected."
         elif "Dark Pool" in agg or "ICEBERG" in agg: verdict, logic = "BUY (Stock)", "Institutional absorption."
         return verdict, logic
-    except: return "NEUTRAL", "Logic failure."
+    except Exception as e:
+        notify_error_sync("SCANNER_VERDICT", e, f"Logic failure in trade verdict generation.")
+        return "NEUTRAL", "Logic failure."
 
 def process_results(all_results, macro_context, sector_performance):
     try:
@@ -290,6 +291,5 @@ def process_results(all_results, macro_context, sector_performance):
             else: final_alerts.extend(t_group.to_dict('records'))
         return final_alerts
     except Exception as e:
-        logging.error(f"Result processing failed: {e}")
         notify_error_sync("SCANNER_PROCESS", e, "Critical failure during spread/cluster linking.")
         return all_results
