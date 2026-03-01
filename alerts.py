@@ -49,7 +49,7 @@ RESPONSE SCHEMA (JSON ONLY):
         elif "```" in text: text = text.split("```")[1].split("```")[0].strip()
         return json.loads(text)
     except: return None
-async def send_alert(trade, ticker_context="", macro_context=None):
+async def send_alert(trade, ticker_context="", macro_context=None, is_shadow=False):
     ai = get_ai_summary(trade, ticker_context, macro_context)
     if ai and not ai.get("is_unusual", True): return False
 
@@ -59,8 +59,10 @@ async def send_alert(trade, ticker_context="", macro_context=None):
     sys_v, sys_l = generate_system_verdict(trade)
     final_v = ai['final_verdict'] if ai and 'final_verdict' in ai else sys_v
 
+    shadow_label = "🕵️ SHADOW TRIGGERED 🕵️\n" if is_shadow else ""
+
     msg = f"""🚨 FLOWGOD ALPHA: {trade['ticker']} 🚨
-💎 Current Price: ${trade['underlying_price']:.2f}
+{shadow_label}💎 Current Price: ${trade['underlying_price']:.2f}
 {stars} (Conviction: {ai['confidence_score'] if ai and 'confidence_score' in ai else '??'}%)
 
 🏁 VERDICT: {final_v}
