@@ -20,10 +20,10 @@ from occ_auditor import audit_clearinghouse
 from shadow_ingestion import ShadowDeepDive, run_deep_dive_analysis
 from error_reporter import reporter
 
-async def process_ticker_sequential(ticker, sector_from_csv, is_deep_dive=False, congress_tickers=None):
+async def process_ticker_sequential(ticker, sector_from_csv, current_idx, total_count, is_deep_dive=False, congress_tickers=None):
     """Sequential worker function."""
     try:
-        logging.info(f"Scanning {ticker} ({sector_from_csv})...")
+        logging.info(f"[{current_idx}/{total_count}] Scanning {ticker} ({sector_from_csv})...")
         stock_data = get_stock_info(ticker)
         price = stock_data['price']
         stock_vol = stock_data['volume']
@@ -41,13 +41,13 @@ async def process_ticker_sequential(ticker, sector_from_csv, is_deep_dive=False,
         df = get_option_chain_data(ticker, price, stock_vol, full_chain=True)
         if df.empty: return []
 
-        # Tier-3: Social Sentiment Fusion
+        # Tier-3: Social Sentiment Fusion (Live Message Volume)
         social_vel = get_social_velocity(ticker)
 
         update_historical(ticker, df)
         context = get_ticker_context(ticker, days=2)
 
-        # Scorer now handles Surface, GEX Walls, TRV, Social Hype, Earnings, and Pelosi Signals
+        # Scorer now handles Surface, GEX Walls, TRV, Social Hype, Earnings, Pelosi, and SEC Signals
         flags = score_unusual(df, ticker, stock_z, sector, candle, social_vel, earnings_date, congress_tickers=congress_tickers)
 
         trades_to_alert = []
@@ -110,7 +110,7 @@ async def scan_cycle():
     for _, row in watchlist_df.iterrows():
         scan_list.append({'ticker': row['ticker'], 'sector': row['sector'], 'is_deep': False})
     
-    # Inject Trigger Tickers at the front (Shadow + Congressional)
+    # Inject Trigger Tickers at the front
     for t in trigger_tickers:
         if t not in [s['ticker'] for s in scan_list]:
             scan_list.insert(0, {'ticker': t, 'sector': 'Unknown', 'is_deep': True})
@@ -118,9 +118,10 @@ async def scan_cycle():
             for s in scan_list:
                 if s['ticker'] == t: s['is_deep'] = True
     
+    total_to_scan = len(scan_list)
     all_raw_alerts = []
-    for item in scan_list:
-        alerts_data = await process_ticker_sequential(item['ticker'], item['sector'], is_deep_dive=item['is_deep'], congress_tickers=congress_tickers)
+    for idx, item in enumerate(scan_list):
+        alerts_data = await process_ticker_sequential(item['ticker'], item['sector'], idx+1, total_to_scan, is_deep_dive=item['is_deep'], congress_tickers=congress_tickers)
         all_raw_alerts.extend(alerts_data)
         time.sleep(random.uniform(3, 5))
 

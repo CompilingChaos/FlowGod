@@ -46,11 +46,9 @@ def get_sec_filings(ticker):
             data = response.json()
             recent = data.get('filings', {}).get('recent', {})
             filings = []
-            # Extract top 5
             for i in range(min(5, len(recent.get('form', [])))):
                 form = recent['form'][i]
                 date = recent['filingDate'][i]
-                # We specifically track Form 4 (Insider Trade) and 13D/G (Whale Ownership)
                 if form in ['4', '13D', '13G']:
                     filings.append({'form': form, 'date': date})
             return filings
@@ -194,10 +192,17 @@ def get_contract_oi(contract_symbol):
 def get_social_velocity(ticker):
     """
     Tier-3 Social Sentiment Scraper.
-    Proxies common institutional dashboards to detect retail FOMO spikes.
+    Derives real message volume from StockTwits public feed.
     """
     try:
-        return 1.5 # Default low-velocity baseline
+        url = f"https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            messages = data.get('messages', [])
+            # Return actual message count as the 'velocity' baseline
+            return float(len(messages))
+        return 0.0
     except Exception as e:
         logging.warning(f"Social Velocity failed for {ticker}: {e}")
         return 0.0
