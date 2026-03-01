@@ -87,22 +87,21 @@ MACRO MARKET CONTEXT:
 - SENTIMENT: {m['sentiment']}
 
 AI INSTRUCTIONS:
-1. Use the RAW QUANTITATIVE METRICS to determine the true magnitude of the trade. (e.g. Is the GEX impact large enough to move the stock?)
-2. Use the REAL-TIME NEWS CONTEXT to explain WHY this flow is happening.
-3. Check if the SEC SIGNAL confirms insider conviction (e.g. GHOST ECHO).
-4. Identify if this trade is a REPEAT of a winning pattern based on RAG Memory.
-5. Determine if the Delta/Gamma suggests a high-leverage directional bet or a cautious hedge.
-6. Explain the TARGET: Where should I look to take profit based on the Ceiling/Floor?
-7. Validate SYSTEM VERDICT: {sys_verdict}. Suggest BUY, CALL, PUT, or NEUTRAL.
+1. ESTIMATE DURATION: The Expiration Date (Exp) is the MOST important ceiling. Never suggest a duration longer than the DTE.
+2. TIMING QUALITY: Use 'Timing Quality' (Decay Velocity) and 'Charm Exposure' to accelerate the estimate. (High Quality = Move expected in 1-3 days).
+3. Use the RAW QUANTITATIVE METRICS to determine the true magnitude of the trade.
+4. Use the REAL-TIME NEWS CONTEXT to explain WHY this flow is happening.
+5. Check if the SEC SIGNAL confirms insider conviction.
+6. Validate SYSTEM VERDICT: {sys_verdict}. Suggest BUY, CALL, PUT, or NEUTRAL.
 
 RESPONSE SCHEMA (JSON ONLY):
 {{
   "is_unusual": boolean,
   "confidence_score": integer (0-100),
   "final_verdict": "BUY" | "CALL" | "PUT" | "NEUTRAL",
-  "estimated_duration": "string",
-  "verdict_reasoning": "Simple explanation based on math, news, and flow",
-  "category": "e.g. Vanna Slingshot | Insider Echo | Speculative Potential",
+  "estimated_duration": "e.g. 24-48 Hours | 1-2 Weeks | Hold until Expiration",
+  "verdict_reasoning": "Simple explanation based on math, news, and timing velocity",
+  "category": "e.g. Gamma Squeeze | Insider Echo | Speculative Potential",
   "analysis": "Simple overview of why this pattern matters"
 }}"""
 
