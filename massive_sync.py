@@ -50,7 +50,8 @@ def sync_baselines():
         logging.info("All ticker baselines up to date.")
         return
 
-    logging.info(f"Syncing {len(tickers_to_sync)} tickers (Social + Volume + Earnings)...")
+    total_sync = len(tickers_to_sync)
+    logging.info(f"Syncing {total_sync} tickers (Volume + Earnings)...")
     end_date = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
     start_date = (datetime.now() - timedelta(days=63)).strftime('%Y-%m-%d') 
 
@@ -59,6 +60,7 @@ def sync_baselines():
             sector = ticker_to_sector.get(ticker, "Unknown")
             social_vel = get_social_velocity(ticker)
             earnings_date = earnings_map.get(ticker)
+            current_progress = f"[{i+1}/{total_sync}]"
             
             # OPTION 1: Non-US Ticker (Alpha Vantage)
             if "." in ticker:
@@ -76,7 +78,7 @@ def sync_baselines():
                             try: sector = yf.Ticker(ticker, session=yf_session).info.get('sector', 'Unknown')
                             except: pass
                         update_ticker_baseline(ticker, avg_vol, std_dev, sector, social_vel, earnings_date)
-                        logging.info(f"Updated {ticker} (AlphaV) | Social: {social_vel} | Earnings: {earnings_date}")
+                        logging.info(f"{current_progress} Updated {ticker} (AlphaV) | Avg Vol: {avg_vol:,.0f} | Earnings: {earnings_date}")
                 time.sleep(15)
                 continue
 
@@ -95,7 +97,7 @@ def sync_baselines():
                             try: sector = yf.Ticker(ticker, session=yf_session).info.get('sector', 'Unknown')
                             except: pass
                         update_ticker_baseline(ticker, avg_vol, std_dev, sector, social_vel, earnings_date)
-                        logging.info(f"Updated {ticker} (Massive) | Social: {social_vel} | Earnings: {earnings_date}")
+                        logging.info(f"{current_progress} Updated {ticker} (Massive) | Avg Vol: {avg_vol:,.0f} | Earnings: {earnings_date}")
             if i < len(tickers_to_sync) - 1: time.sleep(13) 
         except Exception as e:
             logging.error(f"Sync failed for {ticker}: {e}")
