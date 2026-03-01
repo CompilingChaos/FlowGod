@@ -15,29 +15,33 @@ def get_stock_heat(ticker, live_vol):
         return z_score, baseline.get('sector', 'Unknown'), baseline.get('earnings_date')
     return 0, "Unknown", None
 
-def calculate_color(S, K, T, r, sigma, option_type='calls'):
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0.0
+def calculate_greeks_vec(S, K, T, r, sigma, option_type='calls'):
+    """Vectorized Black-Scholes Greeks calculation using NumPy."""
     try:
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-        nd1 = norm.pdf(d1)
-        term1 = -nd1 / (2 * S * T * sigma * math.sqrt(T))
-        term2 = 1 + (2 * r * T * d1 - d2 * sigma * math.sqrt(T)) / (sigma * math.sqrt(T))
-        return round(term1 * term2, 6)
-    except: return 0.0
-
-def calculate_greeks(S, K, T, r, sigma, option_type='calls'):
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0: return 0, 0, 0, 0, 0
-    try:
-        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
-        d2 = d1 - sigma * math.sqrt(T)
-        delta = norm.cdf(d1) if option_type == 'calls' else norm.cdf(d1) - 1
-        gamma = norm.pdf(d1) / (S * sigma * math.sqrt(T))
+        T = np.maximum(T, 0.0001) # Prevent division by zero
+        sigma = np.maximum(sigma, 0.01) # Prevent log(0)
+        
+        d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+        d2 = d1 - sigma * np.sqrt(T)
+        
+        if option_type == 'calls':
+            delta = norm.cdf(d1)
+        else:
+            delta = norm.cdf(d1) - 1
+            
+        gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
         vanna = (norm.pdf(d1) * d2) / sigma
-        charm = -norm.pdf(d1) * (r / (sigma * math.sqrt(T)) - d2 / (2 * T))
-        color = calculate_color(S, K, T, r, sigma, option_type)
-        return round(delta, 3), round(gamma, 4), round(vanna, 4), round(charm, 4), color
-    except: return 0, 0, 0, 0, 0
+        charm = -norm.pdf(d1) * (r / (sigma * np.sqrt(T)) - d2 / (2 * T))
+        
+        # Vectorized Color (Gamma Decay)
+        term1 = -norm.pdf(d1) / (2 * S * T * sigma * np.sqrt(T))
+        term2 = 1 + (2 * r * T * d1 - d2 * sigma * np.sqrt(T)) / (sigma * np.sqrt(T))
+        color = term1 * term2
+        
+        return np.round(delta, 3), np.round(gamma, 4), np.round(vanna, 4), np.round(charm, 4), np.round(color, 6)
+    except Exception as e:
+        logging.error(f"Vectorized Greeks failure: {e}")
+        return np.zeros_like(S), np.zeros_like(S), np.zeros_like(S), np.zeros_like(S), np.zeros_like(S)
 
 def calculate_volatility_surface(df):
     if df.empty: return 0, 0, "NEUTRAL"
@@ -52,20 +56,31 @@ def calculate_volatility_surface(df):
     except: return 0, 0, "NEUTRAL"
 
 def map_gex_walls(df):
+    """
+    GEX 2.0 Refinement:
+    Models dealer hedging pressure by signing gamma exposures.
+    Identifies the Zero Gamma Flip point.
+    """
     if df.empty: return 0, 0, 0
     try:
+        # Sign Gamma: Calls (+) Puts (-) assuming dealer is short both (Standard GEX Model)
         df['net_gex'] = np.where(df['side'] == 'calls', 
                                  df['gamma'] * df['openInterest'] * 100 * df['underlying_price'],
                                  -df['gamma'] * df['openInterest'] * 100 * df['underlying_price'])
+        
         strike_gex = df.groupby('strike')['net_gex'].sum()
         call_wall, put_wall = strike_gex.idxmax(), strike_gex.idxmin()
+        
+        # Zero Gamma Flip Point calculation
         flip, strike_gex_sorted = 0, strike_gex.sort_index()
         for i in range(len(strike_gex_sorted)-1):
             if np.sign(strike_gex_sorted.iloc[i]) != np.sign(strike_gex_sorted.iloc[i+1]):
                 flip = strike_gex_sorted.index[i]
                 break
         return call_wall, put_wall, flip
-    except: return 0, 0, 0
+    except Exception as e:
+        logging.error(f"GEX Wall mapping failure: {e}")
+        return 0, 0, 0
 
 def calculate_hvn_conviction(df_1m, t_type, spot):
     if df_1m is None or len(df_1m) < 20: return 1.0, "N/A"
@@ -136,8 +151,38 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
         weekly_calls = get_weekly_campaign_stats(ticker, 'CALLS')
         weekly_puts = get_weekly_campaign_stats(ticker, 'PUTS')
 
-        # 1. Microstructure & Earnings Catalyst
+        # 1. Vectorized Greek Calculation (Massive Performance Boost)
+        T_vec = df['dte'].values / 365.0
+        S_vec = df['underlying_price'].values
+        K_vec = df['strike'].values
+        sigma_vec = df['impliedVolatility'].values
+        
+        # We split by side for vectorized delta
+        calls = df['side'] == 'calls'
+        puts = df['side'] == 'puts'
+        
+        df['delta'], df['gamma'], df['vanna'], df['charm'], df['color'] = 0.0, 0.0, 0.0, 0.0, 0.0
+        
+        if any(calls):
+            d, g, v, c, color = calculate_greeks_vec(S_vec[calls], K_vec[calls], T_vec[calls], 0.045, sigma_vec[calls], 'calls')
+            df.loc[calls, ['delta', 'gamma', 'vanna', 'charm', 'color']] = np.stack([d, g, v, c, color], axis=1)
+            
+        if any(puts):
+            d, g, v, c, color = calculate_greeks_vec(S_vec[puts], K_vec[puts], T_vec[puts], 0.045, sigma_vec[puts], 'puts')
+            df.loc[puts, ['delta', 'gamma', 'vanna', 'charm', 'color']] = np.stack([d, g, v, c, color], axis=1)
+
+        # 2. Derived Quant Metrics
+        df['gex'] = df['gamma'] * df['openInterest'] * 100 * df['underlying_price']
+        df['decay_vel'] = df['color'] * df['openInterest'] * 100
+        
+        call_wall, put_wall, flip = map_gex_walls(df)
+        total_decay_vel = int(df['decay_vel'].sum())
+        spot = df.iloc[0]['underlying_price']
+        
+        # 3. Microstructure & Earnings Catalyst
         micro_label, micro_bonus = detect_microstructure_conviction(candle_df)
+        trend_p = predict_trend_probability(candle_df, call_wall, put_wall)
+        
         earnings_bonus, days_to_earnings = 0, -1
         if earnings_date:
             try:
@@ -145,18 +190,6 @@ def score_unusual(df, ticker, stock_z, sector="Unknown", candle_df=None, social_
                 days_to_earnings = (e_date - datetime.now().date()).days
                 if 0 <= days_to_earnings <= 7: earnings_bonus = 50 
             except: pass
-
-        for idx, row in df.iterrows():
-            T = max(0.001, row['dte']) / 365.0
-            d, g, v, c, color = calculate_greeks(row['underlying_price'], row['strike'], T, 0.045, row['impliedVolatility'], row['side'])
-            df.at[idx, 'delta'], df.at[idx, 'gamma'], df.at[idx, 'vanna'], df.at[idx, 'charm'], df.at[idx, 'color'] = d, g, v, c, color
-            df.at[idx, 'gex'] = g * row['openInterest'] * 100 * row['underlying_price']
-            df.at[idx, 'decay_vel'] = color * row['openInterest'] * 100
-
-        call_wall, put_wall, flip = map_gex_walls(df)
-        total_decay_vel = int(df['decay_vel'].sum())
-        spot = df.iloc[0]['underlying_price']
-        trend_p = predict_trend_probability(candle_df, call_wall, put_wall)
         
         results = []
         for _, row in df.iterrows():
@@ -215,7 +248,7 @@ def generate_system_verdict(trade):
             if w_count >= 3: verdict, logic = "CALL (Long)", f"Active Weekly Campaign ({w_count} alerts). Massive institutional scaling."
             elif 0 <= e_dte <= 7: verdict, logic = "CALL (Long)", f"Earnings Front-Running ({e_dte}d). High Gamma setup."
             elif trend_p > 0.8: verdict, logic = "CALL (Long)", f"Aggressive sweep + Trend Prob ({trend_p*100}%)."
-            elif skew < 0: verdict, logic = "CALL (Long)", "Aggressive sweep + Bullish Skew."
+            elif skew < -0.05: verdict, logic = "CALL (Long)", "Aggressive sweep + Bullish Skew."
             elif spot > 0 and put_wall > 0 and (spot - put_wall) / spot < 0.02: verdict, logic = "CALL (Long)", "Support bounce at Put Wall."
             else: verdict, logic = "BUY (Stock)", "Bullish flow, conservative tech."
         elif "PUT" in t_type and "Aggressive" in agg:
