@@ -26,6 +26,9 @@ PROCESSED_FILE = 'processed_messages.json'
 
 tg_bot = Bot(token=TELEGRAM_TOKEN)
 
+# Common non-ticker trading terms to ignore
+STOP_WORDS = {"CALL", "PUT", "ALERT", "BUY", "SELL", "LONG", "SHORT", "ASK", "BID", "FLOW", "SIZE", "SWEEP", "BLOCK"}
+
 def calculate_rsi(data, window=14):
     delta = data.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
@@ -44,7 +47,6 @@ async def get_macro_context():
         return "Macro data unavailable."
 
 async def analyze_with_ai_retry(trade_content, news_context, stats, market_data):
-    """Randomly selects keys and enforces strict JSON output with Macro/TA/IV context."""
     keys = list(GEMINI_API_KEYS)
     random.shuffle(keys)
     
@@ -69,7 +71,7 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data)
     Return a JSON object with exactly these keys:
     - is_insider: (boolean)
     - insider_conviction: (int 1-10)
-    - iv_warning: (string or null, e.g. "HIGH IV RISK" or null if safe)
+    - iv_warning: (string or null)
     - insider_logic: (HTML format)
     - meaningfulness: (string)
     - direction: (LONG/SHORT)
@@ -96,8 +98,13 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data)
 
 def fetch_news(ticker, query_type="general"):
     try:
+        # Use company name for SEC if possible, otherwise ticker
         yesterday = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
-        query = f"site:sec.gov {ticker} filing after:{yesterday}" if query_type == "sec" else f"{ticker} stock news insider after:{yesterday}"
+        if query_type == "sec":
+            query = f'site:sec.gov "{ticker}" ("Form 4" OR "13D" OR "13G") after:{yesterday}'
+        else:
+            query = f"{ticker} stock news insider catalyst after:{yesterday}"
+        
         results = list(search(query, num_results=3, lang="en"))
         return "\n".join(results)
     except: return "No recent data found."
@@ -107,31 +114,54 @@ async def process_message(message):
     if message.embeds:
         for e in message.embeds: trade_info += f"Embed: {e.title} - {e.description}\n"
     
-    ticker = "SPY" 
-    words = trade_info.replace('$', '').split()
-    for word in words:
-        if word.isupper() and 1 < len(word) < 6:
-            ticker = word
-            break
+    # IMPROVED TICKER EXTRACTION
+    ticker = "SPY"
+    # Look for $TICKER or word before 'Calls/Puts' or word after 'ALERT:'
+    match = re.search(r'\$([A-Z]{1,5})', trade_info)
+    if not match:
+        match = re.search(r'([A-Z]{1,5})\s+(?:Calls|Puts|\$)', trade_info)
+    
+    if match:
+        ticker = match.group(1)
+    else:
+        # Fallback to stop-word filtered search
+        words = trade_info.replace(':', ' ').replace('$', ' ').split()
+        for word in words:
+            if word.isupper() and 1 < len(word) < 6 and word not in STOP_WORDS:
+                ticker = word
+                break
             
-    # Fetch Complex Market Data
     try:
         tk = yf.Ticker(ticker)
-        hist = tk.history(period="1y")
-        curr = hist.iloc[-1]
+        # Fetch price at message time (approximate to 1m)
+        msg_time = message.created_at
+        hist_1m = tk.history(start=msg_time - timedelta(minutes=5), end=msg_time + timedelta(minutes=5), interval="1m")
         
-        entry_price = round(curr['Close'], 2)
-        sma50 = round(hist['Close'].rolling(50).mean().iloc[-1], 2)
-        sma200 = round(hist['Close'].rolling(200).mean().iloc[-1], 2)
-        rsi = round(calculate_rsi(hist['Close']).iloc[-1], 2)
+        if not hist_1m.empty:
+            entry_price = round(hist_1m['Close'].iloc[0], 2)
+        else:
+            entry_price = round(tk.history(period="1d")['Close'].iloc[-1], 2)
+
+        # Technicals
+        hist_full = tk.history(period="1y")
+        sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2)
+        sma200 = round(hist_full['Close'].rolling(200).mean().iloc[-1], 2)
+        rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2)
         
-        # IV Proxy (simplified for free data)
-        iv_proxy = round(tk.options[0] if tk.options else 0, 2) # Just a placeholder for raw options availability
+        # IV Logic (Corrected)
+        iv_context = "IV Data: "
+        if tk.options:
+            chain = tk.option_chain(tk.options[0])
+            avg_iv = chain.calls['impliedVolatility'].mean() * 100
+            iv_context += f"Avg IV for front-month: {avg_iv:.1f}%"
+        else:
+            iv_context += "Unavailable"
+
         macro = await get_macro_context()
-        
         market_data = (
             f"Ticker: {ticker} @ ${entry_price}\n"
             f"Technicals: RSI={rsi}, 50SMA=${sma50}, 200SMA=${sma200}\n"
+            f"{iv_context}\n"
             f"Macro: {macro}\n"
             f"Earnings: {tk.calendar.get('Earnings Date', ['N/A'])[0] if isinstance(tk.calendar, dict) else 'N/A'}"
         )
@@ -150,7 +180,6 @@ async def process_message(message):
         log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], 
                   data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'])
 
-    # Build High-Quality Telegram Message
     insider_tag = "🚨 <b>INSIDER ALERT</b>" if data['is_insider'] else "📊 <b>STANDARD FLOW</b>"
     iv_box = f"⚠️ <b>{data['iv_warning']}</b>\n━━━━━━━━━━━━━━━━━\n" if data['iv_warning'] else ""
     

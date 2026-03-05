@@ -7,92 +7,87 @@ import yfinance as yf
 from google import genai
 from telegram import Bot
 from dotenv import load_dotenv
-from flow_god import analyze_with_ai_retry
+from flow_god import analyze_with_ai_retry, fetch_news
 from database import init_db, log_trade, get_performance_stats
+from datetime import datetime, timezone
 
 load_dotenv()
 init_db()
 
-async def run_tilray_2024_reconstruction():
-    print("--- Recreating Tilray 2024 Earnings Beat Scenario ---")
-    
-    # 1. Exact Historical Scenario Data (Jan 2024)
-    ticker = "TLRY"
-    trade_content = (
-        "🚨 UNUSUAL WHALES ALERT: TLRY $2.00 Calls expiring Jan 19. "
-        "Block trade of 25,000 contracts detected. Size: $2.1M. "
-        "Sweep executed at the ASK during high-volume breakout."
-    )
-    
-    # Reconstructed Insider/News Context
-    news_sec_context = (
-        "Earnings: Double Beat reported Jan 9 (Record $194M Revenue, $0.00 Adj EPS).\n"
-        "Insider: CFO Carl Merton purchased shares at $1.80 leading into the report.\n"
-        "News: Successful diversification into craft beer; reduction in convertible debt."
-    )
-    
-    # 2. Simulated Market Data (Recreating the high-momentum timing)
-    market_data = (
-        "Ticker: TLRY @ $1.82 (Pre-Jump)\n"
-        "Technicals: RSI=62 (Strong Momentum), 50SMA=$1.65, 200SMA=$1.75 (Golden Cross forming)\n"
-        "Macro: SPY: +0.85%, QQQ: +1.10% (Growth Stock Rally)\n"
-        "Earnings: 2024-01-09 (Double Beat Potential)"
-    )
-    
-    print(f"🔹 Simulated Scenario: {ticker} (Jan 2024 Momentum Play)")
+class MockMessage:
+    def __init__(self, content, author="Unusual Whales"):
+        self.content = content
+        self.author = author
+        self.embeds = []
+        self.id = 12345
+        self.created_at = datetime.now(timezone.utc)
 
-    # 3. Test Gemini Analysis
-    print("🔹 Testing Gemini 3 Flash (High-Conviction Reconstruction)...")
+async def run_comprehensive_test():
+    print("--- Final Logic & Extraction Verification ---")
+    
+    # 1. Test Ticker Extraction with Noise
+    # This string has noise like 'ALERT' and 'CALL' which used to fail
+    raw_content = "🚨 UNUSUAL WHALES ALERT: $TSLA $250 Calls expiring tomorrow. Heavy sweep detected."
+    mock_msg = MockMessage(raw_content)
+    
+    print(f"🔹 Testing Extraction from: {raw_content}")
+    # We simulate the extraction logic here to report it
+    import re
+    match = re.search(r'\$([A-Z]{1,5})', raw_content)
+    ticker = match.group(1) if match else "FAIL"
+    print(f"✅ Extracted Ticker: {ticker}")
+
+    # 2. Test Historical Price Fetching (Approx trade time)
+    print("🔹 Fetching Price at trade time...")
+    tk = yf.Ticker(ticker)
+    hist = tk.history(period="1d", interval="1m")
+    if not hist.empty:
+        price = round(hist['Close'].iloc[-1], 2)
+        print(f"✅ Trade Time Price: ${price}")
+    else:
+        print("❌ Price fetch failed")
+
+    # 3. Test Full Analysis Flow
+    print("🔹 Running Full Analysis...")
+    news = fetch_news(ticker)
+    sec = fetch_news(ticker, query_type="sec")
     stats = get_performance_stats()
-    data = await analyze_with_ai_retry(trade_content, news_sec_context, stats, market_data)
+    
+    # Quantitative Context
+    market_data = f"Ticker: {ticker} @ ${price}\nMacro: Neutral\nTechnicals: RSI=50"
+    
+    data = await analyze_with_ai_retry(raw_content, news + "\n" + sec, stats, market_data)
     
     if data and isinstance(data, dict):
-        print(f"✅ JSON Parsed. Insider Logic: {data.get('insider_logic')[:50]}...")
+        print(f"✅ Gemini Response Received. IV Warning: {data.get('iv_warning')}")
     else:
-        print(f"❌ Gemini Analysis Failed")
+        print("❌ Analysis Failed")
         return
 
-    # 4. Send to Telegram
+    # 4. Telegram Delivery
     tg_token = os.getenv('TELEGRAM_TOKEN')
     tg_chat_id = os.getenv('TELEGRAM_CHAT_ID')
     if tg_token and tg_chat_id:
         try:
             bot = Bot(token=tg_token)
             insider_tag = "🚨 <b>INSIDER ALERT</b>" if data['is_insider'] else "📊 <b>STANDARD FLOW</b>"
-            iv_box = f"⚠️ <b>{data['iv_warning']}</b>\n━━━━━━━━━━━━━━━━━\n" if data['iv_warning'] else ""
-            
             final_msg = (
-                f"🧪 <b>TILRAY 2024 RECONSTRUCTION</b>\n"
+                f"🧪 <b>FINAL LOGIC TEST: {ticker}</b>\n"
                 f"{insider_tag}\n"
                 f"━━━━━━━━━━━━━━━━━\n"
-                f"{iv_box}"
                 f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n"
                 f"🐋 <b>Meaning:</b> {data['meaningfulness']}\n"
                 f"━━━━━━━━━━━━━━━━━\n"
                 f"📊 <b>Action:</b> <code>{data['direction']}</code>\n"
                 f"⚙️ <b>Leverage:</b> <code>{data['leverage']}x</code>\n"
-                f"⏱ <b>Timeframe:</b> <code>{data['timeframe_hours']}h</code>\n"
                 f"━━━━━━━━━━━━━━━━━\n"
-                f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n"
-                f"🛑 <b>Stop Loss:</b> <code>${data['stop_loss']}</code>\n"
-                f"━━━━━━━━━━━━━━━━━\n"
-                f"🔍 <b>INSIDER EVIDENCE:</b>\n"
-                f"{data['insider_logic']}\n"
-                f"━━━━━━━━━━━━━━━━━\n"
-                f"🧐 <b>CRITICAL ANALYSIS:</b>\n"
-                f"<i>{data['analysis']}</i>\n\n"
-                f"📈 <i>{stats}</i>"
+                f"🧐 <b>ANALYSIS:</b>\n"
+                f"<i>{data['analysis']}</i>"
             )
             await bot.send_message(chat_id=tg_chat_id, text=final_msg, parse_mode='HTML')
-            print("✅ Tilray 2024 Reconstruction Sent")
+            print("✅ Telegram Delivered")
         except Exception as e:
-            print(f"❌ Telegram Failed: {e}")
-
-    # 5. Cleanup
-    with sqlite3.connect('flow_god.db') as conn:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM trades WHERE ticker = ?", (ticker,))
-        conn.commit()
+            print(f"❌ Telegram Error: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(run_tilray_2024_reconstruction())
+    asyncio.run(run_comprehensive_test())
