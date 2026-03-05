@@ -68,40 +68,54 @@ async def scrape_discord():
         content = await page.content()
         soup = BeautifulSoup(content, 'html.parser')
         
-        # Find all message items
-        message_items = soup.find_all('ol', class_=lambda x: x and 'messageListItem' in x)
-        
+        # Find all message items using broader selectors
+        # Discord uses li[class*="messageListItem"] or div[role="listitem"]
+        message_items = soup.find_all(['li', 'div'], class_=lambda x: x and 'messageListItem' in x)
+        if not message_items:
+            # Fallback: look for any element that looks like a message container
+            message_items = soup.find_all('li', id=lambda x: x and x.startswith('chat-messages-'))
+
         messages_to_process = []
-        # Reverse to get newest messages first if needed, but Discord usually lists them chronologically
-        for item in message_items[-10:]: # Look at the last 10 to pick 3
+        # Process the last few items found
+        for item in message_items[-15:]: 
             if len(messages_to_process) >= 3:
                 break
-
-            # Micro-jitter: simulate "reading" or "scrolling" delay
-            micro_delay = random.uniform(0.5, 2.5)
-            await asyncio.sleep(micro_delay)
             
-            # Look for the actual message text and embeds
-            msg_content = item.find('div', class_=lambda x: x and 'messageContent' in x)
+            # Look for content in standard containers
+            msg_content = item.find('div', id=lambda x: x and x.startswith('message-content-'))
+            if not msg_content:
+                msg_content = item.find('div', class_=lambda x: x and 'messageContent' in x)
+            
+            # Look for embeds
             embeds = item.find_all('div', class_=lambda x: x and 'embedFull' in x)
             
             text_data = ""
             if msg_content:
-                text_data += msg_content.get_text() + "\n"
+                text_data += msg_content.get_text(separator=" ").strip() + "\n"
                 
             for embed in embeds:
-                title = embed.find('div', class_=lambda x: x and 'embedTitle' in x)
+                title = embed.find(['div', 'a'], class_=lambda x: x and 'embedTitle' in x)
                 desc = embed.find('div', class_=lambda x: x and 'embedDescription' in x)
-                if title: text_data += f"TITLE: {title.get_text()}\n"
-                if desc: text_data += f"DESC: {desc.get_text()}\n"
+                fields = embed.find_all('div', class_=lambda x: x and 'embedField' in x)
+                
+                if title: text_data += f"TITLE: {title.get_text().strip()}\n"
+                if desc: text_data += f"DESC: {desc.get_text().strip()}\n"
+                for field in fields:
+                    f_name = field.find('div', class_=lambda x: x and 'embedFieldName' in x)
+                    f_val = field.find('div', class_=lambda x: x and 'embedFieldValue' in x)
+                    if f_name and f_val:
+                        text_data += f"{f_name.get_text()}: {f_val.get_text()}\n"
             
             if text_data.strip():
                 messages_to_process.append({
                     "content": text_data.strip(),
                     "timestamp": datetime.now().isoformat()
                 })
+                # Micro-jitter between successful extractions
+                await asyncio.sleep(random.uniform(0.5, 1.5))
 
-        print(f"✅ Scraped {len(messages_to_process)} message units (limited to 3).")
+        if not messages_to_process and message_items:
+            print(f"⚠️ Found {len(message_items)} potential items but failed to extract text. Check DOM structure.")
         await browser.close()
         return messages_to_process
 
