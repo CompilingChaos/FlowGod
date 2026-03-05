@@ -46,7 +46,7 @@ async def analyze_with_ai_retry(trade_content, news_context):
     for key in keys:
         try:
             genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-3-flash')
+            model = genai.GenerativeModel('gemini-3-flash-preview')
             response = model.generate_content(prompt)
             return response.text
         except Exception as e:
