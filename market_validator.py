@@ -24,18 +24,24 @@ async def validate_trades():
         
         for trade in open_trades:
             ticker = trade['ticker']
-            entry_price = trade['entry_price']
-            direction = trade['direction']
-            entry_time = datetime.fromisoformat(trade['entry_time'])
-            timeframe_hours = trade['timeframe_hours']
-            leverage = trade['leverage']
-            
             try:
+                # Robustly cast values from DB to ensure they are not sequences/strings
+                entry_price = float(trade['entry_price'])
+                leverage = float(trade['leverage'] or 1)
+                direction = str(trade['direction']).upper()
+                entry_time = datetime.fromisoformat(trade['entry_time'])
+                timeframe_hours = float(trade['timeframe_hours'] or 24)
+                
                 tk = yf.Ticker(ticker)
-                current_price = tk.history(period="1d")['Close'].iloc[-1]
+                hist = tk.history(period="1d")
+                if hist.empty:
+                    print(f"⚠️ No price data for {ticker}")
+                    continue
+                    
+                current_price = float(hist['Close'].iloc[-1])
                 
                 # Calculate P/L
-                if direction == "LONG":
+                if "LONG" in direction or "CALL" in direction:
                     raw_pnl = (current_price - entry_price) / entry_price
                 else:
                     raw_pnl = (entry_price - current_price) / entry_price
