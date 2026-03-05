@@ -97,13 +97,29 @@ def fetch_news(ticker, query_type="general"):
 
 async def perform_full_analysis(trade_info, msg_time=None):
     """Core analysis logic reusable for Discord or Telegram."""
+    # --- DEEP EXTRACTION PARSER ---
     match = re.search(r'\$([A-Z]{1,5})', trade_info)
     if not match: match = re.search(r'([A-Z]{1,5})\s+(?:Calls|Puts|\$)', trade_info)
     ticker = match.group(1) if match else "SPY"
-            
+    
+    # Extract premium, strike, and expiry for better AI context
+    premium = re.search(r'Prem(?:ium)?:\s*\$([\d\.]+[KMB]?)', trade_info, re.I)
+    strike = re.search(r'Strike\s*\$?([\d\.]+)', trade_info, re.I)
+    expiry = re.search(r'Exp(?:iring)?\s*([\d\-\/]{5,10})', trade_info, re.I)
+    
+    ticker = ticker.upper()
+    print(f"🔍 Analyzing {ticker} (Premium: {premium.group(1) if premium else 'N/A'})")
+
     try:
         tk = yf.Ticker(ticker)
-        info = tk.info
+        
+        # --- ETF-AWARE LOGIC ---
+        # info.get() can trigger a 404 for ETFs if we access certain keys
+        try:
+            info = tk.info
+        except Exception:
+            info = {} # Fallback for ETFs or API errors
+
         hist_full = tk.history(period="1y")
         
         # Market Price at time of trade
@@ -113,23 +129,26 @@ async def perform_full_analysis(trade_info, msg_time=None):
         else:
             entry_price = round(hist_full['Close'].iloc[-1], 2)
 
-        mkt_cap = info.get('marketCap', 0)
+        # Handling ETFs differently (they use totalAssets instead of marketCap)
+        mkt_cap = info.get('marketCap') or info.get('totalAssets', 0)
         avg_vol = info.get('averageVolume', 1)
         
         # Technicals
-        sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2)
-        rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2)
+        sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2) if not hist_full.empty else 0
+        rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2) if not hist_full.empty else 0
         macro = await get_macro_context()
 
         market_data = (
-            f"Ticker: {ticker} @ ${entry_price} | Market Cap: ${mkt_cap/1e9:.1f}B | ADV: {avg_vol:,}\n"
+            f"Ticker: {ticker} @ ${entry_price} | Size: {mkt_cap/1e9:.1f}B | ADV: {avg_vol:,}\n"
+            f"Strike: {strike.group(1) if strike else 'N/A'} | Expiry: {expiry.group(1) if expiry else 'N/A'}\n"
             f"Technicals: RSI={rsi}, 50SMA=${sma50}\n"
             f"Macro: {macro}\n"
             f"Earnings: {tk.calendar.get('Earnings Date', ['N/A'])[0] if isinstance(tk.calendar, dict) else 'N/A'}"
         )
         await asyncio.sleep(2)
-    except:
-        entry_price, market_data = 0, "Data fetch failed."
+    except Exception as e:
+        print(f"⚠️ YFinance error for {ticker}: {e}")
+        entry_price, market_data = 0, f"Data fetch failed for {ticker}."
 
     news = fetch_news(ticker)
     sec = fetch_news(ticker, query_type="sec")
