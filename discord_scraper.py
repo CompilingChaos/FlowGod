@@ -33,15 +33,22 @@ async def scrape_discord():
         
         # Apply stealth plugins (Definitive Fix for 'module object is not callable')
         try:
-            import playwright_stealth
-            # 1. Try calling it as a function directly from the package
-            if callable(playwright_stealth.stealth):
-                playwright_stealth.stealth(page)
-            # 2. Try calling the function inside the submodule if the names collided
-            elif hasattr(playwright_stealth.stealth, 'stealth') and callable(playwright_stealth.stealth.stealth):
-                playwright_stealth.stealth.stealth(page)
-            else:
-                print("⚠️ Warning: Found stealth module/attribute but none are callable.")
+            # Explicitly import the async function from the submodule
+            from playwright_stealth.stealth import stealth_async
+            await stealth_async(page)
+            print("🛡️ Stealth applied successfully (async mode).")
+        except ImportError:
+            try:
+                # Fallback for different library versions
+                import playwright_stealth
+                if hasattr(playwright_stealth, 'stealth_async'):
+                    await playwright_stealth.stealth_async(page)
+                elif hasattr(playwright_stealth, 'stealth') and hasattr(playwright_stealth.stealth, 'stealth_async'):
+                    await playwright_stealth.stealth.stealth_async(page)
+                else:
+                    print("⚠️ Warning: Could not find stealth_async. Proceeding without stealth.")
+            except Exception as e:
+                print(f"⚠️ Warning: Stealth application failed. {e}")
         except Exception as e:
             print(f"⚠️ Warning: Stealth application failed. {e}")
         
