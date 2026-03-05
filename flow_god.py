@@ -169,48 +169,30 @@ async def perform_full_analysis(trade_info, msg_time=None):
     # Clean up common UI artifacts that break regex
     clean_info = str(trade_info).replace("🔥", "").replace("🚨", "").strip()
     
-    # 1. Try "Time & Sales" format (Relaxed anchor)
-    # Example: MRVL 80 C 03/06/2026
     ts_match = re.search(r'([A-Z]{1,5})\s+([\d\.]+)\s+([CP])\s+([\d\/]{8,10})', clean_info)
-    
-    # 2. Try standard Alert format ($TICKER or TICKER Calls)
     match = re.search(r'\$([A-Z]{1,5})', clean_info)
     if not match: match = re.search(r'\b([A-Z]{1,5})\s+(?:Calls|Puts|\$)', clean_info, re.I)
 
     if ts_match:
         ticker = ts_match.group(1).upper()
-        strike_val = ts_match.group(2)
-        option_type = "Calls" if ts_match.group(3).upper() == "C" else "Puts"
-        expiry_val = ts_match.group(4)
+        strike_val = ts_match.group(2); option_type = "Calls" if ts_match.group(3).upper() == "C" else "Puts"; expiry_val = ts_match.group(4)
     elif match:
-        ticker = match.group(1).upper()
-        strike_val, expiry_val, option_type = "N/A", "N/A", "Options"
+        ticker = match.group(1).upper(); strike_val, expiry_val, option_type = "N/A", "N/A", "Options"
     else:
-        # Final fallback: Look for any 1-5 letter word at the very start
         first_word = re.match(r'^([A-Z]{1,5})\b', clean_info)
-        ticker = first_word.group(1).upper() if first_word else "SPY"
-        strike_val, expiry_val, option_type = "N/A", "N/A", "Options"
+        ticker = first_word.group(1).upper() if first_word else "SPY"; strike_val, expiry_val, option_type = "N/A", "N/A", "Options"
+
     prem_match = re.search(r'Prem(?:ium)?:\s*\$([\d\.,]+[KMB]?)', trade_info, re.I)
     premium_usd = parse_premium(prem_match.group(1) if prem_match else "0")
     if premium_usd < 100000: return None, ticker, None, 0
     if is_long_term(expiry_val):
-        v_match = re.search(r'Vol/OI:\s*([\d\.]+)', trade_info, re.I)
-        o_match = re.search(r'OTM:\s*([-\d\.\%]+)', trade_info, re.I)
-        b_match = re.search(r'Bid/Ask %:\s*([\d\/]+)', trade_info, re.I)
-        log_long_term_flow(ticker, option_type, strike_val, expiry_val, premium_usd, 
-                          float(v_match.group(1)) if v_match else 0, 
-                          float(o_match.group(1).replace('%','')) if o_match else 0, 
-                          b_match.group(1) if b_match else "N/A")
+        v_match = re.search(r'Vol/OI:\s*([\d\.]+)', trade_info, re.I); o_match = re.search(r'OTM:\s*([-\d\.\%]+)', trade_info, re.I); b_match = re.search(r'Bid/Ask %:\s*([\d\/]+)', trade_info, re.I)
+        log_long_term_flow(ticker, option_type, strike_val, expiry_val, premium_usd, float(v_match.group(1)) if v_match else 0, float(o_match.group(1).replace('%','')) if o_match else 0, b_match.group(1) if b_match else "N/A")
         return "STORED", ticker, None, 0
     iv_rank = calculate_iv_rank(ticker)
     try:
-        tk = yf.Ticker(ticker)
-        hist_full = tk.history(period="1y")
-        entry_price = round(hist_full['Close'].iloc[-1], 2)
-        mkt_cap = (tk.info.get('marketCap') or tk.info.get('totalAssets', 0)) if tk.info else 0
-        sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2)
-        rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2)
-        macro = await get_macro_context()
+        tk = yf.Ticker(ticker); hist_full = tk.history(period="1y"); entry_price = round(hist_full['Close'].iloc[-1], 2); mkt_cap = (tk.info.get('marketCap') or tk.info.get('totalAssets', 0)) if tk.info else 0
+        sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2); rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2); macro = await get_macro_context()
         market_data = (f"Ticker: {ticker} @ ${entry_price} | Size: {mkt_cap/1e9:.1f}B | IV Rank: {iv_rank}%\n"
                       f"Option: {strike_val} {option_type} Exp {expiry_val}\n"
                       f"Metrics: RSI={rsi}, 50SMA=${sma50} | Macro: {macro}")
@@ -222,8 +204,7 @@ async def perform_full_analysis(trade_info, msg_time=None):
     data = await analyze_with_ai_retry(trade_info, news + "\n" + sec, stats, market_data, daily_context)
     if not data: return None, ticker, stats, entry_price
     if entry_price > 0:
-        log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], 
-                  data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'], iv_rank, premium_usd)
+        log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'], iv_rank, premium_usd)
     return data, ticker, stats, entry_price
 
 def format_telegram_msg(ticker, data, stats, label="SIGNAL"):
@@ -238,8 +219,10 @@ async def handle_telegram_inbound(update: Update, context: ContextTypes.DEFAULT_
     if str(update.effective_chat.id) != str(TELEGRAM_CHAT_ID): return
     status_msg = await update.message.reply_text("🧠 <b>FlowGod is analyzing...</b>", parse_mode='HTML')
     data, ticker, stats, entry_price = await perform_full_analysis(update.message.text)
-    if data:
+    if data and data != "STORED" and data['insider_conviction'] >= 6:
         await update.message.reply_text(format_telegram_msg(ticker, data, stats, "REQUEST"), parse_mode='HTML')
+    elif data and data != "STORED":
+        await update.message.reply_text(f"🔈 Muting {ticker}: Conviction {data['insider_conviction']} too low.")
     await status_msg.delete()
 
 async def process_scraped_messages():
@@ -252,7 +235,7 @@ async def process_scraped_messages():
         content = msg['content']
         if content in processed: continue
         data, ticker, stats, entry_price = await perform_full_analysis(content)
-        if data and data != "STORED":
+        if data and data != "STORED" and data['insider_conviction'] >= 6:
             bot = Bot(token=TELEGRAM_TOKEN)
             await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=format_telegram_msg(ticker, data, stats, "AUTOPILOT"), parse_mode='HTML')
         processed.append(content)
