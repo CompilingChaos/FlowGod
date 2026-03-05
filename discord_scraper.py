@@ -3,7 +3,7 @@ import json
 import os
 import random
 from playwright.async_api import async_playwright
-import playwright_stealth
+from playwright_stealth import Stealth
 from bs4 import BeautifulSoup
 from datetime import datetime
 
@@ -31,24 +31,11 @@ async def scrape_discord():
         context = await browser.new_context(storage_state=SESSION_FILE)
         page = await context.new_page()
         
-        # Apply stealth plugins (Definitive Fix for 'module object is not callable')
+        # Apply stealth plugins (Definitive Fix for playwright-stealth 2.x)
         try:
-            # Explicitly import the async function from the submodule
-            from playwright_stealth.stealth import stealth_async
-            await stealth_async(page)
-            print("🛡️ Stealth applied successfully (async mode).")
-        except ImportError:
-            try:
-                # Fallback for different library versions
-                import playwright_stealth
-                if hasattr(playwright_stealth, 'stealth_async'):
-                    await playwright_stealth.stealth_async(page)
-                elif hasattr(playwright_stealth, 'stealth') and hasattr(playwright_stealth.stealth, 'stealth_async'):
-                    await playwright_stealth.stealth.stealth_async(page)
-                else:
-                    print("⚠️ Warning: Could not find stealth_async. Proceeding without stealth.")
-            except Exception as e:
-                print(f"⚠️ Warning: Stealth application failed. {e}")
+            stealth_applier = Stealth()
+            await stealth_applier.apply_stealth_async(page)
+            print("🛡️ Stealth applied successfully (apply_stealth_async).")
         except Exception as e:
             print(f"⚠️ Warning: Stealth application failed. {e}")
         
