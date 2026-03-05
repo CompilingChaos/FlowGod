@@ -30,10 +30,13 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python flow_god.py
 
-      - name: Commit processed messages
+      - name: Daily Performance Validation
+        run: python market_validator.py
+
+      - name: Commit State & Database
         run: |
           git config --global user.name "FlowGod Bot"
           git config --global user.email "flowgod@bot.com"
-          git add processed_messages.json
-          git commit -m "Update processed messages [skip ci]" || echo "No changes to commit"
+          git add processed_messages.json flow_god.db
+          git commit -m "Update state and performance database [skip ci]" || echo "No changes to commit"
           git push

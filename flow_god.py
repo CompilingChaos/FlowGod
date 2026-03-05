@@ -3,14 +3,17 @@ import random
 import asyncio
 import json
 import discord
+import yfinance as yf
 from google import genai
 from googlesearch import search
 from telegram import Bot
 from dotenv import load_dotenv
 import time
 from datetime import datetime, timedelta
+from database import init_db, log_trade, get_performance_stats
 
 load_dotenv()
+init_db()
 
 # Config
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
@@ -22,7 +25,7 @@ PROCESSED_FILE = 'processed_messages.json'
 # Initialize Telegram
 tg_bot = Bot(token=TELEGRAM_TOKEN)
 
-async def analyze_with_ai_retry(trade_content, news_context):
+async def analyze_with_ai_retry(trade_content, news_context, stats):
     """Tries all available Gemini API keys with a delay on failure."""
     keys = list(GEMINI_API_KEYS)
     random.shuffle(keys)
@@ -34,14 +37,18 @@ async def analyze_with_ai_retry(trade_content, news_context):
     News Context:
     {news_context}
 
+    Historical Success Context:
+    {stats}
+
     Task:
     1. Is this a potential insider trade? (Give a conviction score 1-10)
     2. How meaningful is the size vs daily volume?
     3. What direction should I bid (Long/Short)?
     4. What is the recommended leverage (e.g., 5x, 10x)?
-    5. Briefly explain why.
+    5. What is the recommended timeframe to hold this trade (e.g., 24h, 1 week)?
+    6. Briefly explain why.
 
-    Format the output for Telegram (Markdown).
+    Format the output for Telegram (Markdown). Include a summary of the historical performance.
     """
 
     for key in keys:
@@ -60,7 +67,6 @@ async def analyze_with_ai_retry(trade_content, news_context):
 
 def fetch_news(ticker):
     try:
-        # Calculate date for the last 24 hours
         yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
         query = f"{ticker} stock news insider after:{yesterday}"
         results = list(search(query, num_results=5, lang="en"))
@@ -75,7 +81,6 @@ async def process_message(message):
         for e in message.embeds:
             trade_info += f"Embed: {e.title} - {e.description}\n"
     
-    # Extract ticker (simple heuristic)
     ticker = "SPY" 
     words = trade_info.replace('$', '').split()
     for word in words:
@@ -83,10 +88,27 @@ async def process_message(message):
             ticker = word
             break
             
+    # Fetch current price
+    try:
+        price_data = yf.Ticker(ticker).history(period="1d")
+        entry_price = price_data['Close'].iloc[-1] if not price_data.empty else 0
+    except:
+        entry_price = 0
+
     news = fetch_news(ticker)
-    analysis = await analyze_with_ai_retry(trade_info, news)
+    stats = get_performance_stats()
+    analysis = await analyze_with_ai_retry(trade_info, news, stats)
     
-    final_msg = f"🚀 *FlowGod Analysis: {ticker}*\n\n{analysis}"
+    # Extract AI recommendations (simplified for demo, should be more robust)
+    direction = "LONG" if "Long" in analysis else "SHORT"
+    leverage = 5 # Default
+    timeframe = "24h" # Default
+    
+    # Log trade for future validation
+    if entry_price > 0:
+        log_trade(ticker, direction, leverage, timeframe, entry_price)
+
+    final_msg = f"🚀 *FlowGod Analysis: {ticker}*\n\n{analysis}\n\n📊 {stats}"
     try:
         await tg_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=final_msg, parse_mode='Markdown')
     except Exception as e:
@@ -102,8 +124,6 @@ async def main():
     @client.event
     async def on_ready():
         print(f"Logged in as {client.user}")
-        
-        # Load processed IDs
         if os.path.exists(PROCESSED_FILE):
             with open(PROCESSED_FILE, 'r') as f:
                 processed = json.load(f)
@@ -113,19 +133,14 @@ async def main():
         new_processed = []
         for guild in client.guilds:
             for channel in guild.text_channels:
-                channel_name = channel.name.lower()
-                if "unusual" in channel_name or "whale" in channel_name or "flow" in channel_name:
-                    print(f"Checking channel: {channel.name}")
+                if any(k in channel.name.lower() for k in ["unusual", "whale", "flow"]):
                     async for message in channel.history(limit=10):
                         if message.id not in processed:
-                            print(f"Processing message {message.id}...")
                             await process_message(message)
                             new_processed.append(message.id)
         
-        # Save new IDs
         with open(PROCESSED_FILE, 'w') as f:
             json.dump(processed + new_processed, f)
-            
         await client.close()
 
     await client.start(DISCORD_TOKEN)

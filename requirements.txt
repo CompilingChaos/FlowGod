@@ -4,3 +4,4 @@ google-genai
 python-telegram-bot
 aiohttp
 googlesearch-python
+yfinance
