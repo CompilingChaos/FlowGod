@@ -92,6 +92,7 @@ async def process_message(message):
     try:
         price_data = yf.Ticker(ticker).history(period="1d")
         entry_price = price_data['Close'].iloc[-1] if not price_data.empty else 0
+        await asyncio.sleep(3) # Rate limit protection
     except:
         entry_price = 0
 

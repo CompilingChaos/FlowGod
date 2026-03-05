@@ -1,5 +1,6 @@
 import sqlite3
 import yfinance as yf
+import time
 from datetime import datetime, timedelta
 
 DB_NAME = 'flow_god.db'
@@ -15,6 +16,7 @@ def validate_trades():
                 # Fetch recent price data (today)
                 ticker_obj = yf.Ticker(ticker)
                 hist = ticker_obj.history(period="1d")
+                time.sleep(3) # Rate limit protection
                 if hist.empty: continue
                 
                 current_price = hist['Close'].iloc[-1]
