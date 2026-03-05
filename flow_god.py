@@ -26,8 +26,8 @@ PROCESSED_FILE = 'processed_messages.json'
 
 tg_bot = Bot(token=TELEGRAM_TOKEN)
 
-async def analyze_with_ai_retry(trade_content, news_context, stats, current_price):
-    """Randomly selects keys and enforces strict JSON output with deeper critical analysis."""
+async def analyze_with_ai_retry(trade_content, news_context, stats, current_price, earnings_date, sec_context):
+    """Randomly selects keys and enforces strict JSON output with insider logic."""
     keys = list(GEMINI_API_KEYS)
     random.shuffle(keys)
     
@@ -35,23 +35,27 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, current_pric
     Analyze this Unusual Whales trade report:
     {trade_content}
 
+    MARKET DATA:
     Current Price: ${current_price}
+    Next Earnings: {earnings_date}
+    Recent SEC Filings (3d): {sec_context}
     News Context: {news_context}
     Historical Performance: {stats}
 
     Task:
-    Provide a CRITICAL and DEEP analysis. Do not be overly optimistic. Look for reasons why the whale might be wrong or if this is a hedge.
+    Provide a CRITICAL analysis. Specifically look for alignment between this trade and the upcoming earnings or recent SEC activity.
     
     Return a JSON object with exactly these keys:
-    - is_insider: (boolean, true if news/flow strongly suggests non-public knowledge)
+    - is_insider: (boolean)
     - insider_conviction: (int 1-10)
-    - meaningfulness: (string, why this trade matters)
+    - insider_logic: (Concise explanation of insider evidence or lack thereof, HTML format)
+    - meaningfulness: (string)
     - direction: (LONG/SHORT)
     - leverage: (int)
     - timeframe_hours: (int)
     - target_price: (float)
     - stop_loss: (float)
-    - analysis: (A deep, critical 4-5 sentence analysis in HTML format. Focus on risks, news alignment, and volume context.)
+    - analysis: (Critical 4-5 sentence analysis in HTML format.)
     """
 
     for key in keys:
@@ -60,31 +64,31 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, current_pric
             response = client.models.generate_content(
                 model='gemini-3-flash-preview',
                 contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type='application/json'
-                )
+                config=types.GenerateContentConfig(response_mime_type='application/json')
             )
             return json.loads(response.text)
         except Exception as e:
             print(f"Key failed: {e}. Retrying...")
             await asyncio.sleep(5)
-    
     return None
 
-def fetch_news(ticker):
+def fetch_news(ticker, query_type="general"):
     try:
         yesterday = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
-        query = f"{ticker} stock news insider after:{yesterday}"
-        results = list(search(query, num_results=5, lang="en"))
+        if query_type == "sec":
+            query = f"site:sec.gov {ticker} filing after:{yesterday}"
+        else:
+            query = f"{ticker} stock news insider after:{yesterday}"
+        
+        results = list(search(query, num_results=3, lang="en"))
         return "\n".join(results)
     except:
-        return "No recent news found."
+        return "No recent data found."
 
 async def process_message(message):
     trade_info = f"Author: {message.author}\nContent: {message.content}\n"
     if message.embeds:
-        for e in message.embeds:
-            trade_info += f"Embed: {e.title} - {e.description}\n"
+        for e in message.embeds: trade_info += f"Embed: {e.title} - {e.description}\n"
     
     ticker = "SPY" 
     words = trade_info.replace('$', '').split()
@@ -93,25 +97,29 @@ async def process_message(message):
             ticker = word
             break
             
+    # Fetch Data
     try:
-        price_data = yf.Ticker(ticker).history(period="1d")
+        tk = yf.Ticker(ticker)
+        price_data = tk.history(period="1d")
         entry_price = round(price_data['Close'].iloc[-1], 2) if not price_data.empty else 0
+        
+        calendar = tk.calendar
+        earnings_date = calendar.get('Earnings Date', ['N/A'])[0] if isinstance(calendar, dict) else 'N/A'
         await asyncio.sleep(3)
     except:
-        entry_price = 0
+        entry_price, earnings_date = 0, 'N/A'
 
     news = fetch_news(ticker)
+    sec = fetch_news(ticker, query_type="sec")
     stats = get_performance_stats()
-    data = await analyze_with_ai_retry(trade_info, news, stats, entry_price)
     
+    data = await analyze_with_ai_retry(trade_info, news, stats, entry_price, earnings_date, sec)
     if not data: return
 
-    # Log to DB
     if entry_price > 0:
         log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], 
                   data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'])
 
-    # Build Refined Telegram Message
     insider_tag = "🚨 <b>INSIDER ALERT</b>" if data['is_insider'] else "📊 <b>STANDARD FLOW</b>"
     
     final_msg = (
@@ -127,6 +135,9 @@ async def process_message(message):
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n"
         f"🛑 <b>Stop Loss:</b> <code>${data['stop_loss']}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🔍 <b>INSIDER EVIDENCE:</b>\n"
+        f"{data['insider_logic']}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🧐 <b>CRITICAL ANALYSIS:</b>\n"
         f"<i>{data['analysis']}</i>\n\n"
@@ -147,8 +158,7 @@ async def main():
         if os.path.exists(PROCESSED_FILE):
             with open(PROCESSED_FILE, 'r') as f:
                 processed = json.load(f)
-        else:
-            processed = []
+        else: processed = []
 
         new_processed = []
         for guild in client.guilds:
@@ -159,8 +169,7 @@ async def main():
                             await process_message(message)
                             new_processed.append(message.id)
         
-        with open(PROCESSED_FILE, 'w') as f:
-            json.dump(processed + new_processed, f)
+        with open(PROCESSED_FILE, 'w') as f: json.dump(processed + new_processed, f)
         await client.close()
 
     await client.start(DISCORD_TOKEN)
