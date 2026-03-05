@@ -50,8 +50,8 @@ async def run_comprehensive_test():
     if tg_token and tg_chat_id:
         try:
             bot = Bot(token=tg_token)
-            test_msg = f"🧪 *TEST RUN:* {fake_ticker}\n\n{analysis}\n\n📊 {stats}"
-            await bot.send_message(chat_id=tg_chat_id, text=test_msg, parse_mode='Markdown')
+            test_msg = f"🧪 <b>TEST RUN:</b> {fake_ticker}\n\n{analysis}\n\n📊 {stats}"
+            await bot.send_message(chat_id=tg_chat_id, text=test_msg, parse_mode='HTML')
             print("✅ Telegram Test Message Sent")
         except Exception as e:
             print(f"❌ Telegram Failed: {e}")

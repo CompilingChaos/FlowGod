@@ -34,7 +34,7 @@ async def analyze_with_ai_retry(trade_content, news_context, stats):
     Analyze this Unusual Whales trade report:
     {trade_content}
 
-    News Context:
+    News Context (Last 48h):
     {news_context}
 
     Historical Success Context:
@@ -48,7 +48,9 @@ async def analyze_with_ai_retry(trade_content, news_context, stats):
     5. What is the recommended timeframe to hold this trade (e.g., 24h, 1 week)?
     6. Briefly explain why.
 
-    Format the output for Telegram (Markdown). Include a summary of the historical performance.
+    Format the output for Telegram using HTML tags (<b>, <i>, <code>, <pre>). 
+    Do NOT use Markdown. Ensure all tags are properly closed.
+    Include a summary of the historical performance.
     """
 
     for key in keys:
@@ -67,7 +69,8 @@ async def analyze_with_ai_retry(trade_content, news_context, stats):
 
 def fetch_news(ticker):
     try:
-        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        # Calculate date for the last 48 hours
+        yesterday = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
         query = f"{ticker} stock news insider after:{yesterday}"
         results = list(search(query, num_results=5, lang="en"))
         return "\n".join(results)
@@ -109,9 +112,9 @@ async def process_message(message):
     if entry_price > 0:
         log_trade(ticker, direction, leverage, timeframe, entry_price)
 
-    final_msg = f"🚀 *FlowGod Analysis: {ticker}*\n\n{analysis}\n\n📊 {stats}"
+    final_msg = f"🚀 <b>FlowGod Analysis: {ticker}</b>\n\n{analysis}\n\n📊 {stats}"
     try:
-        await tg_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=final_msg, parse_mode='Markdown')
+        await tg_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=final_msg, parse_mode='HTML')
     except Exception as e:
         print(f"Telegram error: {e}")
 
