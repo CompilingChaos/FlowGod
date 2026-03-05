@@ -29,7 +29,7 @@ tg_bot = Bot(token=TELEGRAM_TOKEN)
 async def analyze_with_ai_retry(trade_content, news_context, stats, current_price):
     """Randomly selects keys and enforces strict JSON output."""
     keys = list(GEMINI_API_KEYS)
-    random.shuffle(keys) # Shuffling handles the "random choice" and "retry" in one
+    random.shuffle(keys)
     
     prompt = f"""
     Analyze this Unusual Whales trade report:
@@ -41,13 +41,13 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, current_pric
 
     Return a JSON object with exactly these keys:
     - insider_conviction: (int 1-10)
-    - meaningfulness: (brief string)
+    - meaningfulness: (brief string, e.g. "High Relative Volume")
     - direction: (LONG/SHORT)
     - leverage: (int)
     - timeframe_hours: (int)
     - target_price: (float)
     - stop_loss: (float)
-    - analysis: (detailed HTML string for Telegram using <b>, <i> tags)
+    - analysis: (VERY CONCISE summary, max 2 sentences, HTML format)
     """
 
     for key in keys:
@@ -100,25 +100,30 @@ async def process_message(message):
     stats = get_performance_stats()
     data = await analyze_with_ai_retry(trade_info, news, stats, entry_price)
     
-    if not data:
-        print("Analysis failed completely.")
-        return
+    if not data: return
 
     # Log to DB
     if entry_price > 0:
         log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], 
                   data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'])
 
-    # Build Telegram Message
+    # Build High-Quality Telegram Message
     final_msg = (
-        f"🚀 <b>FlowGod Analysis: {ticker}</b>\n\n"
-        f"<b>Direction:</b> {data['direction']} ({data['leverage']}x)\n"
-        f"<b>Conviction:</b> {data['insider_conviction']}/10\n"
-        f"<b>Target:</b> ${data['target_price']}\n"
-        f"<b>Stop Loss:</b> ${data['stop_loss']}\n"
-        f"<b>Timeframe:</b> {data['timeframe_hours']}h\n\n"
-        f"<b>Analysis:</b>\n{data['analysis']}\n\n"
-        f"📊 <i>{stats}</i>"
+        f"🚀 <b>FLOWGOD SIGNAL: {ticker}</b> 🚀\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n"
+        f"🐋 <b>Meaning:</b> {data['meaningfulness']}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>Action:</b> <code>{data['direction']}</code>\n"
+        f"⚙️ <b>Leverage:</b> <code>{data['leverage']}x</code>\n"
+        f"⏱ <b>Timeframe:</b> <code>{data['timeframe_hours']}h</code>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n"
+        f"🛑 <b>Stop Loss:</b> <code>${data['stop_loss']}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"💡 <b>AI Insight:</b>\n"
+        f"<i>{data['analysis']}</i>\n\n"
+        f"📈 <i>{stats}</i>"
     )
 
     try:
