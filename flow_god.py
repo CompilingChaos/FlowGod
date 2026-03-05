@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timedelta
 import re
 import hashlib
-from database import init_db, log_trade, get_performance_stats, log_long_term_flow, get_daily_trends, log_report, get_last_week_reports, clear_daily_flow
+from database import init_db, log_trade, get_performance_stats, log_long_term_flow, get_daily_trends, log_report, get_last_week_reports, clear_daily_flow, get_ticker_daily_stats
 
 load_dotenv()
 init_db()
@@ -66,16 +66,11 @@ def calculate_iv_rank(ticker):
         tk = yf.Ticker(ticker)
         hist = tk.history(period="1y")
         if hist.empty: return 0
-        # Log returns
         hist['returns'] = hist['Close'].pct_change()
-        # 30-day rolling volatility (annualized)
         hist['vol'] = hist['returns'].rolling(window=30).std() * (252**0.5)
         current_vol = hist['vol'].iloc[-1]
-        
-        # Rank current vol against the year
         min_vol = hist['vol'].min()
         max_vol = hist['vol'].max()
-        
         if max_vol == min_vol: return 50
         iv_rank = ((current_vol - min_vol) / (max_vol - min_vol)) * 100
         return round(iv_rank, 2)
@@ -85,11 +80,9 @@ async def send_daily_trends():
     """Compile, summarize with AI, and send daily smart money trends to Telegram."""
     trends = get_daily_trends()
     if not trends: return
-    
     past_reports = get_last_week_reports()
     raw_data = "\n".join([f"{t}: {d}, ${p/1e6:.1f}M ({c} orders)" for t, d, p, c in trends])
     history_context = "\n---\n".join(past_reports) if past_reports else "No historical reports available."
-    
     prompt = f"""
     You are the FlowGod institutional analyst. Summarize today's Smart Money Trends based on long-term institutional option flow (>30 DTE).
     TODAY'S RAW DATA:
@@ -102,22 +95,16 @@ async def send_daily_trends():
     3. Format in clean HTML for Telegram.
     4. End with a "Market Sentiment" score (1-10).
     """
-    
     summary = "Unable to generate summary."
     keys = list(GEMINI_API_KEYS)
     random.shuffle(keys)
-    
     for key in keys:
         try:
             client = genai.Client(api_key=key)
-            response = client.models.generate_content(
-                model='gemini-3-flash-preview',
-                contents=prompt
-            )
+            response = client.models.generate_content(model='gemini-3-flash-preview', contents=prompt)
             summary = response.text
             break
         except: continue
-
     log_report(summary)
     bot = Bot(token=TELEGRAM_TOKEN)
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"📊 <b>END-OF-DAY INSTITUTIONAL INTELLIGENCE</b>\n\n{summary}", parse_mode='HTML')
@@ -139,11 +126,7 @@ async def get_macro_context():
         return f"SPY: {spy_ret:+.2f}%, QQQ: {qqq_ret:+.2f}%"
     except: return "Macro data unavailable."
 
-def get_content_hash(text):
-    """Generate a unique hash for message content."""
-    return hashlib.sha256(text.encode('utf-8')).hexdigest()
-
-async def analyze_with_ai_retry(trade_content, news_context, stats, market_data):
+async def analyze_with_ai_retry(trade_content, news_context, stats, market_data, daily_context):
     keys = list(GEMINI_API_KEYS)
     random.shuffle(keys)
     prompt = f"""
@@ -151,6 +134,8 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data)
     {trade_content}
     QUANTITATIVE & OPTION DATA:
     {market_data}
+    CUMULATIVE DAILY CONTEXT FOR THIS TICKER:
+    {daily_context}
     NEWS & FILINGS:
     {news_context}
     HISTORICAL PERFORMANCE:
@@ -183,7 +168,6 @@ async def perform_full_analysis(trade_info, msg_time=None):
     match = re.search(r'\$([A-Z]{1,5})', trade_info)
     if not match: match = re.search(r'([A-Z]{1,5})\s+(?:Calls|Puts|\$)', trade_info)
     ts_match = re.search(r'^([A-Z]{1,5})\s+([\d\.]+)\s+([CP])\s+([\d\/]{8,10})', trade_info, re.M)
-    
     if ts_match:
         ticker = ts_match.group(1).upper()
         strike_val = ts_match.group(2)
@@ -192,12 +176,9 @@ async def perform_full_analysis(trade_info, msg_time=None):
     else:
         ticker = match.group(1).upper() if match else "SPY"
         strike_val, expiry_val, option_type = "N/A", "N/A", "Options"
-
     prem_match = re.search(r'Prem(?:ium)?:\s*\$([\d\.,]+[KMB]?)', trade_info, re.I)
     premium_usd = parse_premium(prem_match.group(1) if prem_match else "0")
-    
     if premium_usd < 100000: return None, ticker, None, 0
-
     if is_long_term(expiry_val):
         v_match = re.search(r'Vol/OI:\s*([\d\.]+)', trade_info, re.I)
         o_match = re.search(r'OTM:\s*([-\d\.\%]+)', trade_info, re.I)
@@ -207,7 +188,6 @@ async def perform_full_analysis(trade_info, msg_time=None):
                           float(o_match.group(1).replace('%','')) if o_match else 0, 
                           b_match.group(1) if b_match else "N/A")
         return "STORED", ticker, None, 0
-
     iv_rank = calculate_iv_rank(ticker)
     try:
         tk = yf.Ticker(ticker)
@@ -217,26 +197,19 @@ async def perform_full_analysis(trade_info, msg_time=None):
         sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2)
         rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2)
         macro = await get_macro_context()
-
-        market_data = (
-            f"Ticker: {ticker} @ ${entry_price} | Size: {mkt_cap/1e9:.1f}B | IV Rank: {iv_rank}%\n"
-            f"Option: {strike_val} {option_type} Exp {expiry_val}\n"
-            f"Metrics: RSI={rsi}, 50SMA=${sma50} | Macro: {macro}"
-        )
+        market_data = (f"Ticker: {ticker} @ ${entry_price} | Size: {mkt_cap/1e9:.1f}B | IV Rank: {iv_rank}%\n"
+                      f"Option: {strike_val} {option_type} Exp {expiry_val}\n"
+                      f"Metrics: RSI={rsi}, 50SMA=${sma50} | Macro: {macro}")
     except:
         entry_price, market_data = 0, "Data fetch failed."
-
-    news = fetch_news(ticker)
-    sec = fetch_news(ticker, query_type="sec")
-    stats = get_performance_stats()
-    
-    data = await analyze_with_ai_retry(trade_info, news + "\n" + sec, stats, market_data)
+    news = fetch_news(ticker); sec = fetch_news(ticker, query_type="sec"); stats = get_performance_stats()
+    d_stats = get_ticker_daily_stats(ticker)
+    daily_context = f"This day there have been {d_stats['CALL']['count']} call alerts with a total premium of ${d_stats['CALL']['prem']/1e3:.0f}k and {d_stats['PUT']['count']} puts with a premium of ${d_stats['PUT']['prem']/1e3:.0f}k."
+    data = await analyze_with_ai_retry(trade_info, news + "\n" + sec, stats, market_data, daily_context)
     if not data: return None, ticker, stats, entry_price
-
     if entry_price > 0:
         log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], 
-                  data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'], iv_rank)
-    
+                  data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'], iv_rank, premium_usd)
     return data, ticker, stats, entry_price
 
 def format_telegram_msg(ticker, data, stats, label="SIGNAL"):
@@ -282,8 +255,7 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_telegram_inbound))
     asyncio.create_task(app.run_polling())
     if DISCORD_TOKEN:
-        client = discord.Client(intents=discord.Intents.default())
-        await client.start(DISCORD_TOKEN)
+        client = discord.Client(intents=discord.Intents.default()); await client.start(DISCORD_TOKEN)
     else:
         while True: await asyncio.sleep(3600)
 

@@ -24,7 +24,8 @@ def init_db():
                 is_win INTEGER DEFAULT 0,
                 exit_reason TEXT,
                 iv_rank REAL,
-                peak_pnl REAL DEFAULT 0.0
+                peak_pnl REAL DEFAULT 0.0,
+                premium REAL DEFAULT 0.0
             )
         ''')
         cursor.execute('''
@@ -64,9 +65,12 @@ def get_last_week_reports():
         return [row[0] for row in cursor.fetchall()]
 
 def clear_daily_flow():
+    """Clear today's helping values for a fresh start tomorrow."""
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
+        # 1. Clear the long-term trend buffer
         cursor.execute('DELETE FROM long_term_flow')
+        # 2. We keep the trades for historical P/L, but they won't match tomorrow's "today" query
         conn.commit()
 
 def log_long_term_flow(ticker, direction, strike, expiry, premium, vol_oi, otm, bid_ask):
@@ -92,25 +96,58 @@ def get_daily_trends():
         ''', (f'{today}%',))
         return cursor.fetchall()
 
-def log_trade(ticker, direction, leverage, timeframe_hours, conviction, entry_price, target, stop, iv_rank=0):
+def log_trade(ticker, direction, leverage, timeframe_hours, conviction, entry_price, target, stop, iv_rank=0, premium=0):
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO trades (ticker, entry_time, direction, leverage, timeframe_hours, 
-                              conviction_score, entry_price, target_price, stop_loss, iv_rank)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              conviction_score, entry_price, target_price, stop_loss, iv_rank, premium)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (ticker, datetime.now().isoformat(), direction.upper(), leverage, timeframe_hours, 
-              conviction, entry_price, target, stop, iv_rank))
+              conviction, entry_price, target, stop, iv_rank, premium))
         conn.commit()
+
+def get_ticker_daily_stats(ticker):
+    """Get cumulative count and premium for calls/puts today for a specific ticker."""
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        today = datetime.now().strftime('%Y-%m-%d')
+        stats = {"CALL": {"count": 0, "prem": 0}, "PUT": {"count": 0, "prem": 0}}
+        
+        # 1. Query trades table
+        cursor.execute('''
+            SELECT direction, COUNT(*), SUM(premium) 
+            FROM trades WHERE ticker = ? AND entry_time LIKE ? 
+            GROUP BY direction
+        ''', (ticker, f'{today}%'))
+        for direction, count, prem in cursor.fetchall():
+            d = "CALL" if "CALL" in str(direction).upper() else "PUT"
+            stats[d]["count"] += count
+            stats[d]["prem"] += (prem or 0)
+
+        # 2. Query long_term_flow table
+        cursor.execute('''
+            SELECT direction, COUNT(*), SUM(premium) 
+            FROM long_term_flow WHERE ticker = ? AND entry_time LIKE ? 
+            GROUP BY direction
+        ''', (ticker, f'{today}%'))
+        for direction, count, prem in cursor.fetchall():
+            d = "CALL" if "CALL" in str(direction).upper() else "PUT"
+            stats[d]["count"] += count
+            stats[d]["prem"] += (prem or 0)
+            
+        return stats
 
 def get_performance_stats():
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*), SUM(is_win) FROM trades WHERE status = "CLOSED"')
-        total, wins = cursor.fetchone()
+        row = cursor.fetchone()
+        total, wins = (row[0], row[1]) if row else (0, 0)
         
         cursor.execute('SELECT AVG(is_win) FROM trades WHERE conviction_score >= 8 AND status = "CLOSED"')
-        high_conv_win_rate = cursor.fetchone()[0] or 0
+        res = cursor.fetchone()
+        high_conv_win_rate = res[0] if res and res[0] else 0
         
         if not total or total == 0:
             return "No historical performance data available."
