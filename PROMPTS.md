@@ -1,8 +1,8 @@
 # FlowGod: AI Prompt Library
 
-This document preserves the high-intelligence prompts used by FlowGod to analyze "Unusual Whales" flow against market catalysts, technicals, and macro data.
+This document preserves the high-intelligence prompts used by FlowGod to analyze "Unusual Whales" flow against market catalysts, technicals, macro data, and advanced option metrics.
 
-## 1. The High-Intelligence Analysis Engine
+## 1. The Institutional-Grade Analysis Engine
 **Model:** `gemini-3-flash-preview`
 **Mode:** Strict JSON (`application/json`)
 
@@ -11,26 +11,28 @@ This document preserves the high-intelligence prompts used by FlowGod to analyze
 Analyze this Unusual Whales trade report:
 {trade_content}
 
-QUANTITATIVE DATA:
-{market_data} (Includes RSI, 50/200 SMA, and Macro SPY/QQQ returns)
+QUANTITATIVE & OPTION DATA:
+{market_data} (Includes RSI, 50SMA, Macro trends, Market Cap, ADV, and Volume vs Open Interest)
 
 NEWS & FILINGS:
-{news_context} (Includes SEC site search and general news)
+{news_context}
 
 HISTORICAL PERFORMANCE:
 {stats}
 
 Task:
 Provide a CRITICAL analysis. Specifically look for alignment between this trade and the upcoming earnings or recent SEC activity.
-- Check for "IV Crush" risk (flag if IV is exceptionally high relative to history).
-- Align trade with Macro (SPY/QQQ) and Technicals (RSI/SMAs).
+- Identify if this is a "GOLDEN SWEEP" (Volume > Open Interest).
+- Evaluate trade size significance relative to Market Cap and Average Daily Volume (ADV).
+- Check for "IV Crush" risk and technical alignment.
 
 Return a JSON object with exactly these keys:
 - is_insider: (boolean)
 - insider_conviction: (int 1-10)
-- iv_warning: (string or null, e.g. "HIGH IV RISK" or null if safe)
+- is_golden_sweep: (boolean, true if trade Volume > existing Open Interest)
+- iv_warning: (string or null)
 - insider_logic: (Concise explanation of insider evidence, HTML format)
-- meaningfulness: (string)
+- meaningfulness: (string, explanation of trade size vs mkt cap/vol)
 - direction: (LONG/SHORT)
 - leverage: (int)
 - timeframe_hours: (int)
@@ -40,7 +42,7 @@ Return a JSON object with exactly these keys:
 ```
 
 ### Key Logic Pillars:
-1.  **Macro Alignment:** Filters signals that are "fighting the tape" (e.g., buying calls while SPY/QQQ is crashing).
-2.  **Technical Verification:** Checks RSI for overbought/oversold conditions and SMA alignment for trend identification.
-3.  **IV Crush Mitigation:** Identifies expensive premiums that might result in losses even if the price move is correct.
-4.  **Information Asymmetry:** Prioritizes trades that happen right before Earnings or after specific SEC filings.
+1.  **Golden Sweep Identification:** Prioritizes trades where the volume exceeds existing Open Interest, indicating a massive *new* institutional bet.
+2.  **Market Cap Scaling:** Calibrates the "Meaningfulness" of a trade based on the company's size (e.g., $1M in Small Cap > $1M in Megacap).
+3.  **Macro & Technical Filtering:** Prevents chasing pumps into overbought conditions or fighting a bearish market tide.
+4.  **IV Risk Management:** Flags expensive premiums to protect against the post-catalyst volatility crush.

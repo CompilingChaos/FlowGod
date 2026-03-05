@@ -9,85 +9,91 @@ from telegram import Bot
 from dotenv import load_dotenv
 from flow_god import analyze_with_ai_retry, fetch_news
 from database import init_db, log_trade, get_performance_stats
-from datetime import datetime, timezone
 
 load_dotenv()
 init_db()
 
-class MockMessage:
-    def __init__(self, content, author="Unusual Whales"):
-        self.content = content
-        self.author = author
-        self.embeds = []
-        self.id = 12345
-        self.created_at = datetime.now(timezone.utc)
-
 async def run_comprehensive_test():
-    print("--- Final Logic & Extraction Verification ---")
+    print("--- Starting Institutional-Grade Integration Test ---")
     
-    # 1. Test Ticker Extraction with Noise
-    # This string has noise like 'ALERT' and 'CALL' which used to fail
-    raw_content = "🚨 UNUSUAL WHALES ALERT: $TSLA $250 Calls expiring tomorrow. Heavy sweep detected."
-    mock_msg = MockMessage(raw_content)
-    
-    print(f"🔹 Testing Extraction from: {raw_content}")
-    # We simulate the extraction logic here to report it
-    import re
-    match = re.search(r'\$([A-Z]{1,5})', raw_content)
-    ticker = match.group(1) if match else "FAIL"
-    print(f"✅ Extracted Ticker: {ticker}")
+    # 1. Simulate Scenario: "Golden Sweep" in a Mid-Cap stock
+    fake_ticker = "PLTR"
+    # Note: 50,000 contracts is massive compared to typical OI
+    fake_trade_content = "🚨 UNUSUAL WHALES ALERT: PLTR $35 Calls expiring Friday. Volume: 50,000 contracts. Aggressive sweep detected."
+    print(f"🔹 Simulated Scenario: {fake_ticker} (Golden Sweep Simulation)")
 
-    # 2. Test Historical Price Fetching (Approx trade time)
-    print("🔹 Fetching Price at trade time...")
-    tk = yf.Ticker(ticker)
-    hist = tk.history(period="1d", interval="1m")
-    if not hist.empty:
-        price = round(hist['Close'].iloc[-1], 2)
-        print(f"✅ Trade Time Price: ${price}")
-    else:
-        print("❌ Price fetch failed")
+    # 2. Test Data Fetching
+    print("🔹 Fetching Context Data...")
+    news = fetch_news(fake_ticker)
+    sec = fetch_news(fake_ticker, query_type="sec")
+    print(f"✅ Context Fetch Complete")
 
-    # 3. Test Full Analysis Flow
-    print("🔹 Running Full Analysis...")
-    news = fetch_news(ticker)
-    sec = fetch_news(ticker, query_type="sec")
+    # 3. Test Gemini Analysis (Full Institutional Mode)
+    print("🔹 Testing Gemini 3 Flash (Golden Sweep + RVOL Mode)...")
     stats = get_performance_stats()
     
-    # Quantitative Context
-    market_data = f"Ticker: {ticker} @ ${price}\nMacro: Neutral\nTechnicals: RSI=50"
+    # Simulated Market Data with Vol > OI
+    market_data = (
+        "Ticker: PLTR @ $32.50 | Market Cap: $72.4B | ADV: 45,000,000\n"
+        "Technicals: RSI=62, 50SMA=$28.40\n"
+        "Option Data: Strike $35 CALL, OI: 12,500, IV: 85%, Volume: 50,000 (GOLDEN SWEEP!)\n"
+        "Macro: SPY: +0.40%, QQQ: +0.75%\n"
+        "Earnings: 2026-05-05"
+    )
     
-    data = await analyze_with_ai_retry(raw_content, news + "\n" + sec, stats, market_data)
+    data = await analyze_with_ai_retry(fake_trade_content, news + "\n" + sec, stats, market_data)
     
     if data and isinstance(data, dict):
-        print(f"✅ Gemini Response Received. IV Warning: {data.get('iv_warning')}")
+        print(f"✅ JSON Parsed. Golden Sweep Flag: {data.get('is_golden_sweep')}")
     else:
-        print("❌ Analysis Failed")
+        print(f"❌ Gemini Analysis Failed")
         return
 
-    # 4. Telegram Delivery
+    # 4. Test Telegram Notification (Advanced Layout)
+    print("🔹 Sending Institutional Signal to Telegram...")
     tg_token = os.getenv('TELEGRAM_TOKEN')
     tg_chat_id = os.getenv('TELEGRAM_CHAT_ID')
     if tg_token and tg_chat_id:
         try:
             bot = Bot(token=tg_token)
             insider_tag = "🚨 <b>INSIDER ALERT</b>" if data['is_insider'] else "📊 <b>STANDARD FLOW</b>"
+            golden_tag = "🏆 <b>GOLDEN SWEEP DETECTED</b>\n" if data.get('is_golden_sweep') else ""
+            iv_box = f"⚠️ <b>{data['iv_warning']}</b>\n━━━━━━━━━━━━━━━━━\n" if data['iv_warning'] else ""
+            
             final_msg = (
-                f"🧪 <b>FINAL LOGIC TEST: {ticker}</b>\n"
+                f"🧪 <b>TEST: {fake_ticker} (INSTITUTIONAL UI)</b>\n"
                 f"{insider_tag}\n"
+                f"{golden_tag}"
                 f"━━━━━━━━━━━━━━━━━\n"
+                f"{iv_box}"
                 f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n"
                 f"🐋 <b>Meaning:</b> {data['meaningfulness']}\n"
                 f"━━━━━━━━━━━━━━━━━\n"
                 f"📊 <b>Action:</b> <code>{data['direction']}</code>\n"
                 f"⚙️ <b>Leverage:</b> <code>{data['leverage']}x</code>\n"
+                f"⏱ <b>Timeframe:</b> <code>{data['timeframe_hours']}h</code>\n"
                 f"━━━━━━━━━━━━━━━━━\n"
-                f"🧐 <b>ANALYSIS:</b>\n"
-                f"<i>{data['analysis']}</i>"
+                f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n"
+                f"🛑 <b>Stop Loss:</b> <code>${data['stop_loss']}</code>\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"🔍 <b>INSIDER EVIDENCE:</b>\n"
+                f"{data['insider_logic']}\n"
+                f"━━━━━━━━━━━━━━━━━\n"
+                f"🧐 <b>CRITICAL ANALYSIS:</b>\n"
+                f"<i>{data['analysis']}</i>\n\n"
+                f"📈 <i>{stats}</i>"
             )
             await bot.send_message(chat_id=tg_chat_id, text=final_msg, parse_mode='HTML')
-            print("✅ Telegram Delivered")
+            print("✅ Institutional Signal Message Sent")
         except Exception as e:
-            print(f"❌ Telegram Error: {e}")
+            print(f"❌ Telegram Failed: {e}")
+
+    # 5. Cleanup
+    with sqlite3.connect('flow_god.db') as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM trades WHERE ticker = ?", (fake_ticker,))
+        conn.commit()
+    print("✅ Cleanup Complete")
 
 if __name__ == "__main__":
     asyncio.run(run_comprehensive_test())
