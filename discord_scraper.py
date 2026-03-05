@@ -19,6 +19,7 @@ async def scrape_discord():
     # await asyncio.sleep(jitter_seconds)
 
     if not os.path.exists(SESSION_FILE):
+
         print(f"❌ Error: {SESSION_FILE} not found. Run 'python session_manager.py' locally first.")
         return []
 
@@ -88,38 +89,22 @@ async def scrape_discord():
             if len(messages_to_process) >= 3:
                 break
             
-            # Look for content in standard containers
-            msg_content = item.find('div', id=lambda x: x and x.startswith('message-content-'))
-            if not msg_content:
-                msg_content = item.find('div', class_=lambda x: x and 'messageContent' in x)
+            # --- BRUTE FORCE TEXT EXTRACTION ---
+            # Instead of looking for specific containers, we grab all text
+            # inside the list item that isn't UI junk (like "Reply" buttons)
+            raw_text = item.get_text(separator=" ").strip()
             
-            # Look for embeds
-            embeds = item.find_all('div', class_=lambda x: x and 'embedFull' in x)
+            # Filter out common UI noise
+            noise = ["(edited)", "NEW", "Reply", "Pins", "Threads"]
+            for n in noise: raw_text = raw_text.replace(n, "")
             
-            text_data = ""
-            if msg_content:
-                text_data += msg_content.get_text(separator=" ").strip() + "\n"
-                
-            for embed in embeds:
-                title = embed.find(['div', 'a'], class_=lambda x: x and 'embedTitle' in x)
-                desc = embed.find('div', class_=lambda x: x and 'embedDescription' in x)
-                fields = embed.find_all('div', class_=lambda x: x and 'embedField' in x)
-                
-                if title: text_data += f"TITLE: {title.get_text().strip()}\n"
-                if desc: text_data += f"DESC: {desc.get_text().strip()}\n"
-                for field in fields:
-                    f_name = field.find('div', class_=lambda x: x and 'embedFieldName' in x)
-                    f_val = field.find('div', class_=lambda x: x and 'embedFieldValue' in x)
-                    if f_name and f_val:
-                        text_data += f"{f_name.get_text()}: {f_val.get_text()}\n"
-            
-            if text_data.strip():
+            if len(raw_text) > 10: # Ignore empty/tiny items
                 messages_to_process.append({
-                    "content": text_data.strip(),
+                    "content": raw_text.strip(),
                     "timestamp": datetime.now().isoformat()
                 })
-                # Micro-jitter between successful extractions
-                await asyncio.sleep(random.uniform(0.5, 1.5))
+
+        print(f"✅ Scraped {len(messages_to_process)} message units via Brute Force.")
 
         if not messages_to_process and message_items:
             print(f"⚠️ Found {len(message_items)} potential items but failed to extract text. Check DOM structure.")
