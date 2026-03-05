@@ -22,7 +22,9 @@ def init_db():
                 status TEXT DEFAULT 'OPEN',
                 pnl REAL DEFAULT 0.0,
                 is_win INTEGER DEFAULT 0,
-                exit_reason TEXT
+                exit_reason TEXT,
+                iv_rank REAL,
+                peak_pnl REAL DEFAULT 0.0
             )
         ''')
         cursor.execute('''
@@ -90,15 +92,15 @@ def get_daily_trends():
         ''', (f'{today}%',))
         return cursor.fetchall()
 
-def log_trade(ticker, direction, leverage, timeframe_hours, conviction, entry_price, target, stop):
+def log_trade(ticker, direction, leverage, timeframe_hours, conviction, entry_price, target, stop, iv_rank=0):
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO trades (ticker, entry_time, direction, leverage, timeframe_hours, 
-                              conviction_score, entry_price, target_price, stop_loss)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              conviction_score, entry_price, target_price, stop_loss, iv_rank)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (ticker, datetime.now().isoformat(), direction.upper(), leverage, timeframe_hours, 
-              conviction, entry_price, target, stop))
+              conviction, entry_price, target, stop, iv_rank))
         conn.commit()
 
 def get_performance_stats():

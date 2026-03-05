@@ -42,15 +42,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python flow_god.py
 
-      - name: Upload Debug Screenshot
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: discord-debug
-          path: debug_discord.png
-          if-no-files-found: ignore
-
-      - name: Daily Performance Validation
+      - name: Market Validation
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python market_validator.py
 
       - name: Commit State & Database

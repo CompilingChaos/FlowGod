@@ -1,86 +1,116 @@
 import sqlite3
 import yfinance as yf
-import time
+import asyncio
 from datetime import datetime, timedelta
+from telegram import Bot
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
 DB_NAME = 'flow_god.db'
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-def validate_trades():
+async def validate_trades():
+    """Update ROI for all OPEN trades and close them if timeframe has passed."""
+    print("📈 Starting Market Validation...")
     with sqlite3.connect(DB_NAME) as conn:
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, ticker, entry_price, direction, leverage, 
-                   target_price, stop_loss, entry_time, timeframe_hours 
-            FROM trades WHERE status = 'OPEN'
-        """)
+        
+        # 1. Fetch all OPEN trades
+        cursor.execute("SELECT * FROM trades WHERE status = 'OPEN'")
         open_trades = cursor.fetchall()
-
-        for t in open_trades:
-            tid, ticker, entry_price, direction, leverage, target, stop, entry_time_str, timeframe_hrs = t
+        
+        for trade in open_trades:
+            ticker = trade['ticker']
+            entry_price = trade['entry_price']
+            direction = trade['direction']
+            entry_time = datetime.fromisoformat(trade['entry_time'])
+            timeframe_hours = trade['timeframe_hours']
+            leverage = trade['leverage']
+            
             try:
-                entry_time = datetime.fromisoformat(entry_time_str)
-                now = datetime.now()
+                tk = yf.Ticker(ticker)
+                current_price = tk.history(period="1d")['Close'].iloc[-1]
                 
-                # Fetch price data since entry
-                ticker_obj = yf.Ticker(ticker)
-                hist = ticker_obj.history(start=entry_time.strftime('%Y-%m-%d'), interval="1h")
-                time.sleep(3)
-                if hist.empty: continue
-
-                # 1. Check for Intraday Stop Loss / Target / Liquidation
-                # We iterate through the high/low of each hour since entry
-                exit_reason = None
-                exit_price = None
+                # Calculate P/L
+                if direction == "LONG":
+                    raw_pnl = (current_price - entry_price) / entry_price
+                else:
+                    raw_pnl = (entry_price - current_price) / entry_price
                 
-                for _, row in hist.iterrows():
-                    high, low = row['High'], row['Low']
-                    
-                    # Liquidation Check (Standard -20% raw move for 5x, -10% for 10x)
-                    liquidation_threshold = 1.0 / leverage
-                    
-                    if direction == 'LONG':
-                        if low <= stop:
-                            exit_reason, exit_price = "STOP LOSS", stop
-                            break
-                        if high >= target:
-                            exit_reason, exit_price = "TARGET REACHED", target
-                            break
-                        if low <= entry_price * (1 - liquidation_threshold):
-                            exit_reason, exit_price = "LIQUIDATED", entry_price * (1 - liquidation_threshold)
-                            break
-                    else: # SHORT
-                        if high >= stop:
-                            exit_reason, exit_price = "STOP LOSS", stop
-                            break
-                        if low <= target:
-                            exit_reason, exit_price = "TARGET REACHED", target
-                            break
-                        if high >= entry_price * (1 + liquidation_threshold):
-                            exit_reason, exit_price = "LIQUIDATED", entry_price * (1 + liquidation_threshold)
-                            break
+                leveraged_pnl = raw_pnl * leverage * 100
+                
+                # Track Peak Profit (simplified for now)
+                peak_pnl = max(trade['peak_pnl'], leveraged_pnl)
+                
+                # Check if timeframe has expired
+                is_expired = (datetime.now() - entry_time) > timedelta(hours=timeframe_hours)
+                
+                if is_expired:
+                    status = 'CLOSED'
+                    is_win = 1 if leveraged_pnl > 0 else 0
+                    exit_reason = "Timeframe Expired"
+                    print(f"✅ Closing {ticker}: {leveraged_pnl:.1f}% ROI")
+                else:
+                    status = 'OPEN'
+                    is_win = 0
+                    exit_reason = None
 
-                # 2. Check for Timeframe Expiration
-                if not exit_reason and now >= entry_time + timedelta(hours=timeframe_hrs):
-                    exit_reason, exit_price = "TIMEFRAME EXPIRED", hist['Close'].iloc[-1]
-
-                # 3. Finalize Trade if reason found
-                if exit_reason:
-                    pnl_raw = (exit_price - entry_price) / entry_price
-                    if direction == 'SHORT': pnl_raw = -pnl_raw
-                    pnl_leveraged = pnl_raw * leverage
-                    is_win = 1 if pnl_leveraged > 0 else 0
-                    
-                    cursor.execute('''
-                        UPDATE trades 
-                        SET status = "CLOSED", pnl = ?, is_win = ?, 
-                            exit_time = ?, exit_reason = ?
-                        WHERE id = ?
-                    ''', (pnl_leveraged, is_win, now.isoformat(), exit_reason, tid))
-                    print(f"Closed {ticker}: {exit_reason} | PnL: {pnl_leveraged:.2%}")
-
+                cursor.execute('''
+                    UPDATE trades 
+                    SET pnl = ?, is_win = ?, status = ?, exit_time = ?, exit_reason = ?, peak_pnl = ?
+                    WHERE id = ?
+                ''', (leveraged_pnl, is_win, status, datetime.now().isoformat() if is_expired else None, 
+                      exit_reason, peak_pnl, trade['id']))
+                
             except Exception as e:
-                print(f"Error validating {ticker}: {e}")
+                print(f"⚠️ Failed to validate {ticker}: {e}")
+
         conn.commit()
 
+async def send_performance_leaderboard():
+    """Summarize recent performance and send to Telegram."""
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Last 7 days stats
+        seven_days_ago = (datetime.now() - timedelta(days=7)).isoformat()
+        cursor.execute('''
+            SELECT ticker, pnl, is_win, direction 
+            FROM trades 
+            WHERE status = 'CLOSED' AND exit_time > ?
+            ORDER BY pnl DESC
+        ''', (seven_days_ago,))
+        
+        recent_trades = cursor.fetchall()
+        if not recent_trades: return
+
+        total = len(recent_trades)
+        wins = sum(1 for t in recent_trades if t['is_win'])
+        avg_roi = sum(t['pnl'] for t in recent_trades) / total
+        
+        msg = "🏆 <b>WEEKLY PERFORMANCE LEADERBOARD</b>\n"
+        msg += f"<i>(Past 7 Days of Validated Signals)</i>\n"
+        msg += "━━━━━━━━━━━━━━━━━\n"
+        msg += f"✅ <b>Win Rate:</b> {(wins/total)*100:.1f}%\n"
+        msg += f"📈 <b>Avg leveraged ROI:</b> {avg_roi:+.1f}%\n"
+        msg += "━━━━━━━━━━━━━━━━━\n"
+        msg += "<b>Top Alpha Signals:</b>\n"
+        
+        for t in recent_trades[:5]:
+            emoji = "🚀" if t['pnl'] > 0 else "📉"
+            msg += f"{emoji} <b>{t['ticker']}</b> ({t['direction']}): {t['pnl']:+.1f}%\n"
+
+        bot = Bot(token=TELEGRAM_TOKEN)
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='HTML')
+
 if __name__ == "__main__":
-    validate_trades()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(validate_trades())
+    # Only send leaderboard on weekends or once a day
+    if datetime.now().hour >= 21:
+        loop.run_until_complete(send_performance_leaderboard())

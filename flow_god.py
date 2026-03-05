@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 import time
 from datetime import datetime, timedelta
 import re
+import hashlib
 from database import init_db, log_trade, get_performance_stats, log_long_term_flow, get_daily_trends, log_report, get_last_week_reports, clear_daily_flow
 
 load_dotenv()
@@ -59,33 +60,47 @@ def is_long_term(expiry_str):
         except:
             return False
 
+def calculate_iv_rank(ticker):
+    """Approximate IV Rank using historical price volatility as a proxy."""
+    try:
+        tk = yf.Ticker(ticker)
+        hist = tk.history(period="1y")
+        if hist.empty: return 0
+        # Log returns
+        hist['returns'] = hist['Close'].pct_change()
+        # 30-day rolling volatility (annualized)
+        hist['vol'] = hist['returns'].rolling(window=30).std() * (252**0.5)
+        current_vol = hist['vol'].iloc[-1]
+        
+        # Rank current vol against the year
+        min_vol = hist['vol'].min()
+        max_vol = hist['vol'].max()
+        
+        if max_vol == min_vol: return 50
+        iv_rank = ((current_vol - min_vol) / (max_vol - min_vol)) * 100
+        return round(iv_rank, 2)
+    except: return 0
+
 async def send_daily_trends():
     """Compile, summarize with AI, and send daily smart money trends to Telegram."""
     trends = get_daily_trends()
     if not trends: return
     
     past_reports = get_last_week_reports()
-    
-    # Format today's raw data for the AI
     raw_data = "\n".join([f"{t}: {d}, ${p/1e6:.1f}M ({c} orders)" for t, d, p, c in trends])
-    
     history_context = "\n---\n".join(past_reports) if past_reports else "No historical reports available."
     
     prompt = f"""
     You are the FlowGod institutional analyst. Summarize today's Smart Money Trends based on long-term institutional option flow (>30 DTE).
-    
     TODAY'S RAW DATA:
     {raw_data}
-    
     PAST WEEK'S SUMMARIES FOR CONTEXT:
     {history_context}
-    
     INSTRUCTIONS:
     1. Identify the top 3 high-conviction institutional themes today.
-    2. Note if any tickers from the past week are seeing REPEAT buying/selling (this is critical).
-    3. Keep it professional, data-driven, and concise.
-    4. Format in clean HTML for Telegram.
-    5. End with a "Market Sentiment" score (1-10) based on this long-term flow.
+    2. Note if any tickers from the past week are seeing REPEAT buying/selling.
+    3. Format in clean HTML for Telegram.
+    4. End with a "Market Sentiment" score (1-10).
     """
     
     summary = "Unable to generate summary."
@@ -101,19 +116,12 @@ async def send_daily_trends():
             )
             summary = response.text
             break
-        except Exception as e:
-            print(f"Daily summary key failed: {e}")
+        except: continue
 
-    # Log the report for future context
     log_report(summary)
-    
-    # Send to Telegram
     bot = Bot(token=TELEGRAM_TOKEN)
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"📊 <b>END-OF-DAY INSTITUTIONAL INTELLIGENCE</b>\n\n{summary}", parse_mode='HTML')
-    
-    # Clear today's bucket for a fresh start tomorrow
     clear_daily_flow()
-    print("🧹 Daily flow cleared and report archived.")
 
 def calculate_rsi(data, window=14):
     delta = data.diff()
@@ -141,29 +149,13 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data)
     prompt = f"""
     Analyze this Unusual Whales trade report:
     {trade_content}
-
     QUANTITATIVE & OPTION DATA:
     {market_data}
-    
     NEWS & FILINGS:
     {news_context}
-    
     HISTORICAL PERFORMANCE:
     {stats}
-
-    Return a JSON object:
-    - is_insider: (boolean)
-    - insider_conviction: (int 1-10)
-    - is_golden_sweep: (boolean)
-    - iv_warning: (string or null)
-    - insider_logic: (HTML format)
-    - meaningfulness: (string)
-    - direction: (LONG/SHORT)
-    - leverage: (int)
-    - timeframe_hours: (int)
-    - target_price: (float)
-    - stop_loss: (float)
-    - analysis: (Critical 4-5 sentence analysis in HTML format.)
+    Return a JSON object with: is_insider, insider_conviction (1-10), is_golden_sweep, iv_warning, insider_logic (HTML), meaningfulness, direction (LONG/SHORT), leverage, timeframe_hours, target_price, stop_loss, analysis (HTML).
     """
     for key in keys:
         try:
@@ -173,11 +165,9 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data)
                 contents=prompt,
                 config=types.GenerateContentConfig(response_mime_type='application/json')
             )
-
             return json.loads(response.text)
         except Exception as e:
-            print(f"Key failed: {e}. Retrying...")
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
     return None
 
 def fetch_news(ticker, query_type="general"):
@@ -190,10 +180,8 @@ def fetch_news(ticker, query_type="general"):
 
 async def perform_full_analysis(trade_info, msg_time=None):
     """Core analysis logic reusable for Discord or Telegram."""
-    # --- DEEP EXTRACTION PARSER (UPDATED FOR TIME & SALES) ---
     match = re.search(r'\$([A-Z]{1,5})', trade_info)
     if not match: match = re.search(r'([A-Z]{1,5})\s+(?:Calls|Puts|\$)', trade_info)
-    
     ts_match = re.search(r'^([A-Z]{1,5})\s+([\d\.]+)\s+([CP])\s+([\d\/]{8,10})', trade_info, re.M)
     
     if ts_match:
@@ -203,71 +191,40 @@ async def perform_full_analysis(trade_info, msg_time=None):
         expiry_val = ts_match.group(4)
     else:
         ticker = match.group(1).upper() if match else "SPY"
-        strike_val = "N/A"
-        expiry_val = "N/A"
-        option_type = "Options"
+        strike_val, expiry_val, option_type = "N/A", "N/A", "Options"
 
-    # Extract metrics
     prem_match = re.search(r'Prem(?:ium)?:\s*\$([\d\.,]+[KMB]?)', trade_info, re.I)
-    premium_raw = prem_match.group(1) if prem_match else "0"
-    premium_usd = parse_premium(premium_raw)
+    premium_usd = parse_premium(prem_match.group(1) if prem_match else "0")
     
-    # --- FILTER 1: PREMIUM FLOOR ($100k) ---
-    if premium_usd < 100000:
-        print(f"⏩ Skipping {ticker}: Premium ${premium_usd:,.0f} below $100k floor.")
-        return None, ticker, None, 0
+    if premium_usd < 100000: return None, ticker, None, 0
 
-    # --- FILTER 2: LONG-TERM STORAGE (>30 Days) ---
     if is_long_term(expiry_val):
-        print(f"📦 Storing {ticker} in Long-Term DB (Expiry: {expiry_val})")
         v_match = re.search(r'Vol/OI:\s*([\d\.]+)', trade_info, re.I)
         o_match = re.search(r'OTM:\s*([-\d\.\%]+)', trade_info, re.I)
         b_match = re.search(r'Bid/Ask %:\s*([\d\/]+)', trade_info, re.I)
-        
         log_long_term_flow(ticker, option_type, strike_val, expiry_val, premium_usd, 
                           float(v_match.group(1)) if v_match else 0, 
                           float(o_match.group(1).replace('%','')) if o_match else 0, 
                           b_match.group(1) if b_match else "N/A")
         return "STORED", ticker, None, 0
 
-    v_val = re.search(r'Vol/OI:\s*([\d\.]+)', trade_info, re.I)
-    o_val = re.search(r'OTM:\s*([-\d\.\%]+)', trade_info, re.I)
-    b_val = re.search(r'Bid/Ask %:\s*([\d\/]+)', trade_info, re.I)
-    m_val = re.search(r'Multi-leg Volume:\s*([\d\%]+)', trade_info, re.I)
-    
-    print(f"🔥 Analyzing Hot Flow: {ticker} {option_type} (${premium_usd:,.0f})")
-
+    iv_rank = calculate_iv_rank(ticker)
     try:
         tk = yf.Ticker(ticker)
-        try:
-            info = tk.info
-        except Exception:
-            info = {}
-
         hist_full = tk.history(period="1y")
-        if msg_time:
-            hist_1m = tk.history(start=msg_time - timedelta(minutes=5), end=msg_time + timedelta(minutes=5), interval="1m")
-            entry_price = round(hist_1m['Close'].iloc[0], 2) if not hist_1m.empty else round(hist_full['Close'].iloc[-1], 2)
-        else:
-            entry_price = round(hist_full['Close'].iloc[-1], 2)
-
-        mkt_cap = info.get('marketCap') or info.get('totalAssets', 0)
-        sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2) if not hist_full.empty else 0
-        rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2) if not hist_full.empty else 0
+        entry_price = round(hist_full['Close'].iloc[-1], 2)
+        mkt_cap = (tk.info.get('marketCap') or tk.info.get('totalAssets', 0)) if tk.info else 0
+        sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2)
+        rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2)
         macro = await get_macro_context()
 
         market_data = (
-            f"Ticker: {ticker} @ ${entry_price} | Size: {mkt_cap/1e9:.1f}B\n"
+            f"Ticker: {ticker} @ ${entry_price} | Size: {mkt_cap/1e9:.1f}B | IV Rank: {iv_rank}%\n"
             f"Option: {strike_val} {option_type} Exp {expiry_val}\n"
-            f"Metrics: Vol/OI={v_val.group(1) if v_val else 'N/A'} | OTM={o_val.group(1) if o_val else 'N/A'} | Bid/Ask={b_val.group(1) if b_val else 'N/A'}\n"
-            f"Complexity: Multi-leg={m_val.group(1) if m_val else '0%'}\n"
-            f"Technicals: RSI={rsi}, 50SMA=${sma50} | Macro: {macro}\n"
-            f"Earnings: {tk.calendar.get('Earnings Date', ['N/A'])[0] if isinstance(tk.calendar, dict) else 'N/A'}"
+            f"Metrics: RSI={rsi}, 50SMA=${sma50} | Macro: {macro}"
         )
-        await asyncio.sleep(2)
-    except Exception as e:
-        print(f"⚠️ YFinance error for {ticker}: {e}")
-        entry_price, market_data = 0, f"Data fetch failed for {ticker}."
+    except:
+        entry_price, market_data = 0, "Data fetch failed."
 
     news = fetch_news(ticker)
     sec = fetch_news(ticker, query_type="sec")
@@ -278,7 +235,7 @@ async def perform_full_analysis(trade_info, msg_time=None):
 
     if entry_price > 0:
         log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], 
-                  data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'])
+                  data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'], iv_rank)
     
     return data, ticker, stats, entry_price
 
@@ -286,102 +243,46 @@ def format_telegram_msg(ticker, data, stats, label="SIGNAL"):
     insider_tag = "🚨 <b>INSIDER ALERT</b>" if data['is_insider'] else "📊 <b>STANDARD FLOW</b>"
     golden_tag = "🏆 <b>GOLDEN SWEEP DETECTED</b>\n" if data.get('is_golden_sweep') else ""
     iv_box = f"⚠️ <b>{data['iv_warning']}</b>\n━━━━━━━━━━━━━━━━━\n" if data['iv_warning'] else ""
-    
-    return (
-        f"🚀 <b>FLOWGOD {label}: {ticker}</b>\n"
-        f"{insider_tag}\n"
-        f"{golden_tag}"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"{iv_box}"
-        f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n"
-        f"🐋 <b>Meaning:</b> {data['meaningfulness']}\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"📊 <b>Action:</b> <code>{data['direction']}</code>\n"
-        f"⚙️ <b>Leverage:</b> <code>{data['leverage']}x</code>\n"
-        f"⏱ <b>Timeframe:</b> <code>{data['timeframe_hours']}h</code>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n"
-        f"🛑 <b>Stop Loss:</b> <code>${data['stop_loss']}</code>\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"🔍 <b>INSIDER EVIDENCE:</b>\n"
-        f"{data['insider_logic']}\n"
-        f"━━━━━━━━━━━━━━━━━\n"
-        f"🧐 <b>CRITICAL ANALYSIS:</b>\n"
-        f"<i>{data['analysis']}</i>\n\n"
-        f"📈 <i>{stats}</i>"
-    )
+    return (f"🚀 <b>FLOWGOD {label}: {ticker}</b>\n{insider_tag}\n{golden_tag}━━━━━━━━━━━━━━━━━\n{iv_box}"
+            f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n📊 <b>Action:</b> <code>{data['direction']}</code>\n"
+            f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n🧐 <b>ANALYSIS:</b> <i>{data['analysis']}</i>")
 
 async def handle_telegram_inbound(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle copy-pasted alerts in Telegram."""
     if str(update.effective_chat.id) != str(TELEGRAM_CHAT_ID): return
-    
-    text = update.message.text
     status_msg = await update.message.reply_text("🧠 <b>FlowGod is analyzing...</b>", parse_mode='HTML')
-    
-    data, ticker, stats, entry_price = await perform_full_analysis(text)
-    
+    data, ticker, stats, entry_price = await perform_full_analysis(update.message.text)
     if data:
-        final_msg = format_telegram_msg(ticker, data, stats, label="REQUEST")
-        await update.message.reply_text(final_msg, parse_mode='HTML')
-    else:
-        await update.message.reply_text("❌ Analysis failed. Check Gemini API keys.")
-    
+        await update.message.reply_text(format_telegram_msg(ticker, data, stats, "REQUEST"), parse_mode='HTML')
     await status_msg.delete()
 
 async def process_scraped_messages():
-    """Read unusual_messages.json and process any new ones."""
     if not os.path.exists('unusual_messages.json'): return
-    
-    try:
-        with open('unusual_messages.json', 'r') as f:
-            scraped = json.load(f)
-    except: return
-
+    with open('unusual_messages.json', 'r') as f: scraped = json.load(f)
     processed = []
     if os.path.exists(PROCESSED_FILE):
         with open(PROCESSED_FILE, 'r') as f: processed = json.load(f)
-
     for msg in scraped:
         content = msg['content']
         if content in processed: continue
-        
-        print(f"🐋 Processing Scraped Alert: {content[:50]}...")
         data, ticker, stats, entry_price = await perform_full_analysis(content)
-        
-        if data:
-            if data != "STORED": # Don't send telegram for long-term stored flow
-                final_msg = format_telegram_msg(ticker, data, stats, label="AUTOPILOT")
-                bot = Bot(token=TELEGRAM_TOKEN)
-                await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=final_msg, parse_mode='HTML')
-            
-            processed.append(content)
-            if len(processed) > 500: processed.pop(0)
-
+        if data and data != "STORED":
+            bot = Bot(token=TELEGRAM_TOKEN)
+            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=format_telegram_msg(ticker, data, stats, "AUTOPILOT"), parse_mode='HTML')
+        processed.append(content)
+        if len(processed) > 500: processed.pop(0)
     with open(PROCESSED_FILE, 'w') as f: json.dump(processed, f)
 
 async def main():
-    if not TELEGRAM_TOKEN:
-        print("❌ TELEGRAM_TOKEN is missing!")
-        return
-    
+    if not TELEGRAM_TOKEN: return
     if os.path.exists('unusual_messages.json'):
         await process_scraped_messages()
-        current_hour = datetime.now().hour
-        if current_hour >= 21:
-            await send_daily_trends()
+        if datetime.now().hour >= 21: await send_daily_trends()
         return
-
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_telegram_inbound))
-    
-    print("🚀 FlowGod is now listening for Telegram requests...")
     asyncio.create_task(app.run_polling())
-
     if DISCORD_TOKEN:
         client = discord.Client(intents=discord.Intents.default())
-        @client.event
-        async def on_ready():
-            print(f"Logged in as {client.user} (Passive Monitor)")
         await client.start(DISCORD_TOKEN)
     else:
         while True: await asyncio.sleep(3600)
