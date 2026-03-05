@@ -150,7 +150,8 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data,
                 contents=prompt,
                 config=types.GenerateContentConfig(response_mime_type='application/json')
             )
-            return json.loads(response.text)
+            data = json.loads(response.text)
+            return data[0] if isinstance(data, list) else data
         except Exception as e:
             await asyncio.sleep(2)
     return None
