@@ -39,6 +39,32 @@ def init_db():
                 bid_ask TEXT
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS daily_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_date DATE UNIQUE,
+                content TEXT
+            )
+        ''')
+        conn.commit()
+
+def log_report(content):
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        today = datetime.now().strftime('%Y-%m-%d')
+        cursor.execute('INSERT OR REPLACE INTO daily_reports (report_date, content) VALUES (?, ?)', (today, content))
+        conn.commit()
+
+def get_last_week_reports():
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT content FROM daily_reports ORDER BY report_date DESC LIMIT 7')
+        return [row[0] for row in cursor.fetchall()]
+
+def clear_daily_flow():
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM long_term_flow')
         conn.commit()
 
 def log_long_term_flow(ticker, direction, strike, expiry, premium, vol_oi, otm, bid_ask):

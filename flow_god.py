@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 import time
 from datetime import datetime, timedelta
 import re
-from database import init_db, log_trade, get_performance_stats, log_long_term_flow, get_daily_trends
+from database import init_db, log_trade, get_performance_stats, log_long_term_flow, get_daily_trends, log_report, get_last_week_reports, clear_daily_flow
 
 load_dotenv()
 init_db()
@@ -30,7 +30,7 @@ STOP_WORDS = {"CALL", "PUT", "ALERT", "BUY", "SELL", "LONG", "SHORT", "ASK", "BI
 def parse_premium(prem_str):
     """Convert premium string like $255,500 or $1.2M to float."""
     if not prem_str: return 0
-    val = prem_str.replace('$', '').replace(',', '').strip()
+    val = str(prem_str).replace('$', '').replace(',', '').strip()
     multiplier = 1
     if 'K' in val.upper():
         multiplier = 1000
@@ -60,23 +60,62 @@ def is_long_term(expiry_str):
             return False
 
 async def send_daily_trends():
-    """Compile and send daily smart money trends to Telegram."""
+    """Compile, summarize with AI, and send daily smart money trends to Telegram."""
     trends = get_daily_trends()
     if not trends: return
     
-    msg = "📊 <b>END-OF-DAY SMART MONEY TRENDS</b>\n"
-    msg += "<i>(Long-term institutional flow >30 DTE)</i>\n"
-    msg += "━━━━━━━━━━━━━━━━━\n"
+    past_reports = get_last_week_reports()
     
-    for ticker, direction, total_prem, count in trends:
-        emoji = "🟢" if direction == "Calls" else "🔴"
-        msg += f"{emoji} <b>{ticker}</b>: ${total_prem/1e6:.1f}M ({count} orders)\n"
+    # Format today's raw data for the AI
+    raw_data = "\n".join([f"{t}: {d}, ${p/1e6:.1f}M ({c} orders)" for t, d, p, c in trends])
     
+    history_context = "\n---\n".join(past_reports) if past_reports else "No historical reports available."
+    
+    prompt = f"""
+    You are the FlowGod institutional analyst. Summarize today's Smart Money Trends based on long-term institutional option flow (>30 DTE).
+    
+    TODAY'S RAW DATA:
+    {raw_data}
+    
+    PAST WEEK'S SUMMARIES FOR CONTEXT:
+    {history_context}
+    
+    INSTRUCTIONS:
+    1. Identify the top 3 high-conviction institutional themes today.
+    2. Note if any tickers from the past week are seeing REPEAT buying/selling (this is critical).
+    3. Keep it professional, data-driven, and concise.
+    4. Format in clean HTML for Telegram.
+    5. End with a "Market Sentiment" score (1-10) based on this long-term flow.
+    """
+    
+    summary = "Unable to generate summary."
+    keys = list(GEMINI_API_KEYS)
+    random.shuffle(keys)
+    
+    for key in keys:
+        try:
+            client = genai.Client(api_key=key)
+            response = client.models.generate_content(
+                model='gemini-2.0-flash',
+                contents=prompt
+            )
+            summary = response.text
+            break
+        except Exception as e:
+            print(f"Daily summary key failed: {e}")
+
+    # Log the report for future context
+    log_report(summary)
+    
+    # Send to Telegram
     bot = Bot(token=TELEGRAM_TOKEN)
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='HTML')
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"📊 <b>END-OF-DAY INSTITUTIONAL INTELLIGENCE</b>\n\n{summary}", parse_mode='HTML')
+    
+    # Clear today's bucket for a fresh start tomorrow
+    clear_daily_flow()
+    print("🧹 Daily flow cleared and report archived.")
 
 def calculate_rsi(data, window=14):
-# ... rest of the helper functions
     delta = data.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
@@ -91,6 +130,10 @@ async def get_macro_context():
         qqq_ret = (qqq['Close'].iloc[-1] / qqq['Close'].iloc[-2] - 1) * 100
         return f"SPY: {spy_ret:+.2f}%, QQQ: {qqq_ret:+.2f}%"
     except: return "Macro data unavailable."
+
+def get_content_hash(text):
+    """Generate a unique hash for message content."""
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 async def analyze_with_ai_retry(trade_content, news_context, stats, market_data):
     keys = list(GEMINI_API_KEYS)
@@ -126,7 +169,7 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data)
         try:
             client = genai.Client(api_key=key)
             response = client.models.generate_content(
-                model='gemini-3-flash-preview',
+                model='gemini-2.0-flash',
                 contents=prompt,
                 config=types.GenerateContentConfig(response_mime_type='application/json')
             )
@@ -147,12 +190,9 @@ def fetch_news(ticker, query_type="general"):
 async def perform_full_analysis(trade_info, msg_time=None):
     """Core analysis logic reusable for Discord or Telegram."""
     # --- DEEP EXTRACTION PARSER (UPDATED FOR TIME & SALES) ---
-    # Try the standard format first
     match = re.search(r'\$([A-Z]{1,5})', trade_info)
     if not match: match = re.search(r'([A-Z]{1,5})\s+(?:Calls|Puts|\$)', trade_info)
     
-    # Try the "Time & Sales" format: TICKER STRIKE C/P EXPIRY
-    # Example: MRVL 80 C 03/06/2026
     ts_match = re.search(r'^([A-Z]{1,5})\s+([\d\.]+)\s+([CP])\s+([\d\/]{8,10})', trade_info, re.M)
     
     if ts_match:
@@ -166,7 +206,7 @@ async def perform_full_analysis(trade_info, msg_time=None):
         expiry_val = "N/A"
         option_type = "Options"
 
-    # Extract additional metrics
+    # Extract metrics
     prem_match = re.search(r'Prem(?:ium)?:\s*\$([\d\.,]+[KMB]?)', trade_info, re.I)
     premium_raw = prem_match.group(1) if prem_match else "0"
     premium_usd = parse_premium(premium_raw)
@@ -179,46 +219,38 @@ async def perform_full_analysis(trade_info, msg_time=None):
     # --- FILTER 2: LONG-TERM STORAGE (>30 Days) ---
     if is_long_term(expiry_val):
         print(f"📦 Storing {ticker} in Long-Term DB (Expiry: {expiry_val})")
-        vol_oi_match = re.search(r'Vol/OI:\s*([\d\.]+)', trade_info, re.I)
-        otm_match = re.search(r'OTM:\s*([-\d\.\%]+)', trade_info, re.I)
-        bid_ask_match = re.search(r'Bid/Ask %:\s*([\d\/]+)', trade_info, re.I)
+        v_match = re.search(r'Vol/OI:\s*([\d\.]+)', trade_info, re.I)
+        o_match = re.search(r'OTM:\s*([-\d\.\%]+)', trade_info, re.I)
+        b_match = re.search(r'Bid/Ask %:\s*([\d\/]+)', trade_info, re.I)
         
         log_long_term_flow(ticker, option_type, strike_val, expiry_val, premium_usd, 
-                          float(vol_oi_match.group(1)) if vol_oi_match else 0, 
-                          float(otm_match.group(1).replace('%','')) if otm_match else 0, 
-                          bid_ask_match.group(1) if bid_ask_match else "N/A")
+                          float(v_match.group(1)) if v_match else 0, 
+                          float(o_match.group(1).replace('%','')) if o_match else 0, 
+                          b_match.group(1) if b_match else "N/A")
         return "STORED", ticker, None, 0
 
-    vol_oi = re.search(r'Vol/OI:\s*([\d\.]+)', trade_info, re.I)
-    otm = re.search(r'OTM:\s*([-\d\.\%]+)', trade_info, re.I)
-    bid_ask = re.search(r'Bid/Ask %:\s*([\d\/]+)', trade_info, re.I)
-    multi_leg = re.search(r'Multi-leg Volume:\s*([\d\%]+)', trade_info, re.I)
+    v_val = re.search(r'Vol/OI:\s*([\d\.]+)', trade_info, re.I)
+    o_val = re.search(r'OTM:\s*([-\d\.\%]+)', trade_info, re.I)
+    b_val = re.search(r'Bid/Ask %:\s*([\d\/]+)', trade_info, re.I)
+    m_val = re.search(r'Multi-leg Volume:\s*([\d\%]+)', trade_info, re.I)
     
     print(f"🔥 Analyzing Hot Flow: {ticker} {option_type} (${premium_usd:,.0f})")
 
     try:
         tk = yf.Ticker(ticker)
-        
-        # --- ETF-AWARE LOGIC ---
-        # info.get() can trigger a 404 for ETFs if we access certain keys
         try:
             info = tk.info
         except Exception:
-            info = {} # Fallback for ETFs or API errors
+            info = {}
 
         hist_full = tk.history(period="1y")
-        
-        # Market Price at time of trade
         if msg_time:
             hist_1m = tk.history(start=msg_time - timedelta(minutes=5), end=msg_time + timedelta(minutes=5), interval="1m")
             entry_price = round(hist_1m['Close'].iloc[0], 2) if not hist_1m.empty else round(hist_full['Close'].iloc[-1], 2)
         else:
             entry_price = round(hist_full['Close'].iloc[-1], 2)
 
-        # Handling ETFs differently (they use totalAssets instead of marketCap)
         mkt_cap = info.get('marketCap') or info.get('totalAssets', 0)
-        
-        # Technicals
         sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2) if not hist_full.empty else 0
         rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2) if not hist_full.empty else 0
         macro = await get_macro_context()
@@ -226,8 +258,8 @@ async def perform_full_analysis(trade_info, msg_time=None):
         market_data = (
             f"Ticker: {ticker} @ ${entry_price} | Size: {mkt_cap/1e9:.1f}B\n"
             f"Option: {strike_val} {option_type} Exp {expiry_val}\n"
-            f"Metrics: Vol/OI={vol_oi.group(1) if vol_oi else 'N/A'} | OTM={otm.group(1) if otm else 'N/A'} | Bid/Ask={bid_ask.group(1) if bid_ask else 'N/A'}\n"
-            f"Complexity: Multi-leg={multi_leg.group(1) if multi_leg else '0%'}\n"
+            f"Metrics: Vol/OI={v_val.group(1) if v_val else 'N/A'} | OTM={o_val.group(1) if o_val else 'N/A'} | Bid/Ask={b_val.group(1) if b_val else 'N/A'}\n"
+            f"Complexity: Multi-leg={m_val.group(1) if m_val else '0%'}\n"
             f"Technicals: RSI={rsi}, 50SMA=${sma50} | Macro: {macro}\n"
             f"Earnings: {tk.calendar.get('Earnings Date', ['N/A'])[0] if isinstance(tk.calendar, dict) else 'N/A'}"
         )
@@ -304,64 +336,53 @@ async def process_scraped_messages():
             scraped = json.load(f)
     except: return
 
-    # Load processed state
     processed = []
     if os.path.exists(PROCESSED_FILE):
         with open(PROCESSED_FILE, 'r') as f: processed = json.load(f)
 
     for msg in scraped:
         content = msg['content']
-        # Simple deduplication based on content (could be improved with hashes)
         if content in processed: continue
         
         print(f"🐋 Processing Scraped Alert: {content[:50]}...")
         data, ticker, stats, entry_price = await perform_full_analysis(content)
         
         if data:
-            final_msg = format_telegram_msg(ticker, data, stats, label="AUTOPILOT")
-            bot = Bot(token=TELEGRAM_TOKEN)
-            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=final_msg, parse_mode='HTML')
+            if data != "STORED": # Don't send telegram for long-term stored flow
+                final_msg = format_telegram_msg(ticker, data, stats, label="AUTOPILOT")
+                bot = Bot(token=TELEGRAM_TOKEN)
+                await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=final_msg, parse_mode='HTML')
             
             processed.append(content)
-            # Keep log manageable (last 500)
             if len(processed) > 500: processed.pop(0)
 
     with open(PROCESSED_FILE, 'w') as f: json.dump(processed, f)
 
 async def main():
-    # If no TELEGRAM_TOKEN, the whole system breaks.
     if not TELEGRAM_TOKEN:
         print("❌ TELEGRAM_TOKEN is missing!")
         return
     
-    # Mode 1: Processing Scraped Messages (for GitHub Actions)
     if os.path.exists('unusual_messages.json'):
         await process_scraped_messages()
-        # If it's near market close (e.g., 21:00 UTC+), send the daily trends summary
         current_hour = datetime.now().hour
         if current_hour >= 21:
             await send_daily_trends()
         return
 
-    # Mode 2: Interactive Telegram Listener (for local run)
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_telegram_inbound))
     
     print("🚀 FlowGod is now listening for Telegram requests...")
-    # Run the bot polling in a separate task
     asyncio.create_task(app.run_polling())
 
-    # Keep the script alive for Discord monitoring too (if ever enabled)
     if DISCORD_TOKEN:
         client = discord.Client(intents=discord.Intents.default())
         @client.event
         async def on_ready():
             print(f"Logged in as {client.user} (Passive Monitor)")
-        
-        # Note: run_polling is non-blocking when used this way
         await client.start(DISCORD_TOKEN)
     else:
-        # If no Discord token, just hang the main loop
         while True: await asyncio.sleep(3600)
 
 if __name__ == "__main__":
