@@ -13,10 +13,10 @@ SESSION_FILE = "discord_session.json"
 MESSAGES_FILE = "unusual_messages.json"
 
 async def scrape_discord():
-    # Random jitter: Wait 1 to 5 minutes before starting
-    # jitter_seconds = random.randint(60, 300)
-    # print(f"⏳ Humanizing behavior: Sleeping for {jitter_seconds} seconds before scraping...")
-    # await asyncio.sleep(jitter_seconds)
+    # Random jitter: Wait 1 to 5 minutes before starting (SAFETY RESTORED)
+    jitter_seconds = random.randint(60, 300)
+    print(f"⏳ Humanizing behavior: Sleeping for {jitter_seconds} seconds before scraping...")
+    await asyncio.sleep(jitter_seconds)
 
     if not os.path.exists(SESSION_FILE):
 
