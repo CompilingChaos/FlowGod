@@ -3,7 +3,7 @@ import random
 import asyncio
 import json
 import discord
-import google.generativeai as genai
+from google import genai
 from googlesearch import search
 from telegram import Bot
 from dotenv import load_dotenv
@@ -45,9 +45,11 @@ async def analyze_with_ai_retry(trade_content, news_context):
 
     for key in keys:
         try:
-            genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-3-flash-preview')
-            response = model.generate_content(prompt)
+            client = genai.Client(api_key=key)
+            response = client.models.generate_content(
+                model='gemini-3-flash-preview',
+                contents=prompt
+            )
             return response.text
         except Exception as e:
             print(f"Key {key[:8]}... failed: {e}. Trying next key in 5s...")

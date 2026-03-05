@@ -2,7 +2,7 @@ import os
 import random
 import asyncio
 import discord
-import google.generativeai as genai
+from google import genai
 from telegram import Bot
 from dotenv import load_dotenv
 
@@ -25,9 +25,11 @@ async def test_secrets():
         # Test a random key with a simple prompt
         try:
             key = random.choice(gemini_keys)
-            genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-3-flash-preview')
-            response = model.generate_content("Hello, this is a secret test. Reply with 'OK'.")
+            client = genai.Client(api_key=key)
+            response = client.models.generate_content(
+                model='gemini-3-flash-preview',
+                contents="Hello, this is a secret test. Reply with 'OK'."
+            )
             print(f"✅ Gemini API Test: {response.text.strip()}")
         except Exception as e:
             print(f"❌ Gemini API Test Failed: {e}")
