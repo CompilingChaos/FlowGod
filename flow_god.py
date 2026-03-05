@@ -166,16 +166,29 @@ def fetch_news(ticker, query_type="general"):
 
 async def perform_full_analysis(trade_info, msg_time=None):
     """Core analysis logic reusable for Discord or Telegram."""
-    match = re.search(r'\$([A-Z]{1,5})', trade_info)
-    if not match: match = re.search(r'([A-Z]{1,5})\s+(?:Calls|Puts|\$)', trade_info)
-    ts_match = re.search(r'^([A-Z]{1,5})\s+([\d\.]+)\s+([CP])\s+([\d\/]{8,10})', trade_info, re.M)
+    # Clean up common UI artifacts that break regex
+    clean_info = str(trade_info).replace("🔥", "").replace("🚨", "").strip()
+    
+    # 1. Try "Time & Sales" format (Relaxed anchor)
+    # Example: MRVL 80 C 03/06/2026
+    ts_match = re.search(r'([A-Z]{1,5})\s+([\d\.]+)\s+([CP])\s+([\d\/]{8,10})', clean_info)
+    
+    # 2. Try standard Alert format ($TICKER or TICKER Calls)
+    match = re.search(r'\$([A-Z]{1,5})', clean_info)
+    if not match: match = re.search(r'\b([A-Z]{1,5})\s+(?:Calls|Puts|\$)', clean_info, re.I)
+
     if ts_match:
         ticker = ts_match.group(1).upper()
         strike_val = ts_match.group(2)
-        option_type = "Calls" if ts_match.group(3) == "C" else "Puts"
+        option_type = "Calls" if ts_match.group(3).upper() == "C" else "Puts"
         expiry_val = ts_match.group(4)
+    elif match:
+        ticker = match.group(1).upper()
+        strike_val, expiry_val, option_type = "N/A", "N/A", "Options"
     else:
-        ticker = match.group(1).upper() if match else "SPY"
+        # Final fallback: Look for any 1-5 letter word at the very start
+        first_word = re.match(r'^([A-Z]{1,5})\b', clean_info)
+        ticker = first_word.group(1).upper() if first_word else "SPY"
         strike_val, expiry_val, option_type = "N/A", "N/A", "Options"
     prem_match = re.search(r'Prem(?:ium)?:\s*\$([\d\.,]+[KMB]?)', trade_info, re.I)
     premium_usd = parse_premium(prem_match.group(1) if prem_match else "0")
