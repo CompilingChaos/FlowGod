@@ -120,6 +120,9 @@ async def perform_full_analysis(trade_info, msg_time=None):
     # Extract additional metrics
     premium = re.search(r'Prem(?:ium)?:\s*\$([\d\.,]+[KMB]?)', trade_info, re.I)
     vol_oi = re.search(r'Vol/OI:\s*([\d\.]+)', trade_info, re.I)
+    otm = re.search(r'OTM:\s*([-\d\.\%]+)', trade_info, re.I)
+    bid_ask = re.search(r'Bid/Ask %:\s*([\d\/]+)', trade_info, re.I)
+    multi_leg = re.search(r'Multi-leg Volume:\s*([\d\%]+)', trade_info, re.I)
     
     ticker = ticker.upper()
     print(f"🔍 Analyzing {ticker} {option_type} (Prem: {premium.group(1) if premium else 'N/A'} | Vol/OI: {vol_oi.group(1) if vol_oi else 'N/A'})")
@@ -153,10 +156,11 @@ async def perform_full_analysis(trade_info, msg_time=None):
         macro = await get_macro_context()
 
         market_data = (
-            f"Ticker: {ticker} @ ${entry_price} | Size: {mkt_cap/1e9:.1f}B | ADV: {avg_vol:,}\n"
-            f"Strike: {strike.group(1) if strike else 'N/A'} | Expiry: {expiry.group(1) if expiry else 'N/A'}\n"
-            f"Technicals: RSI={rsi}, 50SMA=${sma50}\n"
-            f"Macro: {macro}\n"
+            f"Ticker: {ticker} @ ${entry_price} | Size: {mkt_cap/1e9:.1f}B\n"
+            f"Option: {strike_val} {option_type} Exp {expiry_val}\n"
+            f"Metrics: Vol/OI={vol_oi.group(1) if vol_oi else 'N/A'} | OTM={otm.group(1) if otm else 'N/A'} | Bid/Ask={bid_ask.group(1) if bid_ask else 'N/A'}\n"
+            f"Complexity: Multi-leg={multi_leg.group(1) if multi_leg else '0%'}\n"
+            f"Technicals: RSI={rsi}, 50SMA=${sma50} | Macro: {macro}\n"
             f"Earnings: {tk.calendar.get('Earnings Date', ['N/A'])[0] if isinstance(tk.calendar, dict) else 'N/A'}"
         )
         await asyncio.sleep(2)
