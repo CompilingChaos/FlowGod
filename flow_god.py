@@ -10,6 +10,7 @@ from telegram import Bot
 from dotenv import load_dotenv
 import time
 from datetime import datetime, timedelta
+import re
 from database import init_db, log_trade, get_performance_stats
 
 load_dotenv()
@@ -25,7 +26,7 @@ PROCESSED_FILE = 'processed_messages.json'
 # Initialize Telegram
 tg_bot = Bot(token=TELEGRAM_TOKEN)
 
-async def analyze_with_ai_retry(trade_content, news_context, stats):
+async def analyze_with_ai_retry(trade_content, news_context, stats, current_price):
     """Tries all available Gemini API keys with a delay on failure."""
     keys = list(GEMINI_API_KEYS)
     random.shuffle(keys)
@@ -34,23 +35,26 @@ async def analyze_with_ai_retry(trade_content, news_context, stats):
     Analyze this Unusual Whales trade report:
     {trade_content}
 
+    Current Market Price: ${current_price}
     News Context (Last 48h):
     {news_context}
-
-    Historical Success Context:
+    Historical Strategy Stats:
     {stats}
 
     Task:
-    1. Is this a potential insider trade? (Give a conviction score 1-10)
-    2. How meaningful is the size vs daily volume?
-    3. What direction should I bid (Long/Short)?
-    4. What is the recommended leverage (e.g., 5x, 10x)?
-    5. What is the recommended timeframe to hold this trade (e.g., 24h, 1 week)?
-    6. Briefly explain why.
+    1. Is this a potential insider trade? (Conviction score 1-10)
+    2. Meaningfulness vs daily volume.
+    3. Direction (LONG or SHORT).
+    4. Leverage (e.g., 5, 10).
+    5. Timeframe (Hours to hold, e.g., 24, 168).
+    6. Target Exit Price ($).
+    7. Stop Loss Price ($).
+    8. Analysis explanation.
 
-    Format the output for Telegram using HTML tags (<b>, <i>, <code>, <pre>). 
-    Do NOT use Markdown. Ensure all tags are properly closed.
-    Include a summary of the historical performance.
+    CRITICAL: You MUST include a JSON block at the end of your response with these exact keys:
+    `{{ "direction": "LONG/SHORT", "leverage": int, "timeframe_hours": int, "conviction": int, "target": float, "stop": float }}`
+
+    Format the final output for Telegram using HTML tags (<b>, <i>).
     """
 
     for key in keys:
@@ -65,17 +69,15 @@ async def analyze_with_ai_retry(trade_content, news_context, stats):
             print(f"Key {key[:8]}... failed: {e}. Trying next key in 5s...")
             await asyncio.sleep(5)
     
-    return "Error: All Gemini API keys failed or were rate-limited."
+    return "Error: Gemini failed."
 
 def fetch_news(ticker):
     try:
-        # Calculate date for the last 48 hours
         yesterday = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
         query = f"{ticker} stock news insider after:{yesterday}"
         results = list(search(query, num_results=5, lang="en"))
         return "\n".join(results)
-    except Exception as e:
-        print(f"News fetch error for {ticker}: {e}")
+    except:
         return "No recent news found."
 
 async def process_message(message):
@@ -94,23 +96,26 @@ async def process_message(message):
     # Fetch current price
     try:
         price_data = yf.Ticker(ticker).history(period="1d")
-        entry_price = price_data['Close'].iloc[-1] if not price_data.empty else 0
-        await asyncio.sleep(3) # Rate limit protection
+        entry_price = round(price_data['Close'].iloc[-1], 2) if not price_data.empty else 0
+        await asyncio.sleep(3)
     except:
         entry_price = 0
 
     news = fetch_news(ticker)
     stats = get_performance_stats()
-    analysis = await analyze_with_ai_retry(trade_info, news, stats)
+    analysis = await analyze_with_ai_retry(trade_info, news, stats, entry_price)
     
-    # Extract AI recommendations (simplified for demo, should be more robust)
-    direction = "LONG" if "Long" in analysis else "SHORT"
-    leverage = 5 # Default
-    timeframe = "24h" # Default
-    
-    # Log trade for future validation
-    if entry_price > 0:
-        log_trade(ticker, direction, leverage, timeframe, entry_price)
+    # Parse JSON from AI response
+    try:
+        json_match = re.search(r'\{.*\}', analysis, re.DOTALL)
+        data = json.loads(json_match.group())
+        
+        # Log trade for future validation
+        if entry_price > 0:
+            log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], 
+                      data['conviction'], entry_price, data['target'], data['stop'])
+    except Exception as e:
+        print(f"Failed to parse AI JSON: {e}")
 
     final_msg = f"🚀 <b>FlowGod Analysis: {ticker}</b>\n\n{analysis}\n\n📊 {stats}"
     try:
@@ -119,15 +124,11 @@ async def process_message(message):
         print(f"Telegram error: {e}")
 
 async def main():
-    if not DISCORD_TOKEN or not GEMINI_API_KEYS:
-        print("Missing DISCORD_TOKEN or GEMINI_API_KEYS in environment.")
-        return
-
+    if not DISCORD_TOKEN or not GEMINI_API_KEYS: return
     client = discord.Client(intents=discord.Intents.default())
     
     @client.event
     async def on_ready():
-        print(f"Logged in as {client.user}")
         if os.path.exists(PROCESSED_FILE):
             with open(PROCESSED_FILE, 'r') as f:
                 processed = json.load(f)
