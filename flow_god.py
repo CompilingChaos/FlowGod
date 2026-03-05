@@ -8,6 +8,7 @@ from googlesearch import search
 from telegram import Bot
 from dotenv import load_dotenv
 import time
+from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -59,10 +60,13 @@ async def analyze_with_ai_retry(trade_content, news_context):
 
 def fetch_news(ticker):
     try:
-        query = f"{ticker} stock news insider"
+        # Calculate date for the last 24 hours
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        query = f"{ticker} stock news insider after:{yesterday}"
         results = list(search(query, num_results=5, lang="en"))
         return "\n".join(results)
-    except:
+    except Exception as e:
+        print(f"News fetch error for {ticker}: {e}")
         return "No recent news found."
 
 async def process_message(message):
