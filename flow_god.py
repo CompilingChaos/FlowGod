@@ -7,7 +7,8 @@ import yfinance as yf
 from google import genai
 from google.genai import types
 from googlesearch import search
-from telegram import Bot
+from telegram import Bot, Update
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 import time
 from datetime import datetime, timedelta
@@ -24,7 +25,6 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 PROCESSED_FILE = 'processed_messages.json'
 
-tg_bot = Bot(token=TELEGRAM_TOKEN)
 STOP_WORDS = {"CALL", "PUT", "ALERT", "BUY", "SELL", "LONG", "SHORT", "ASK", "BID", "FLOW", "SIZE", "SWEEP", "BLOCK"}
 
 def calculate_rsi(data, window=14):
@@ -46,7 +46,6 @@ async def get_macro_context():
 async def analyze_with_ai_retry(trade_content, news_context, stats, market_data):
     keys = list(GEMINI_API_KEYS)
     random.shuffle(keys)
-    
     prompt = f"""
     Analyze this Unusual Whales trade report:
     {trade_content}
@@ -60,13 +59,7 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data)
     HISTORICAL PERFORMANCE:
     {stats}
 
-    Task:
-    Provide a CRITICAL analysis. 
-    - Identify if this is a "GOLDEN SWEEP" (Volume > Open Interest).
-    - Evaluate trade size significance relative to Market Cap and ADV.
-    - Check for IV Crush and technical alignment.
-    
-    Return a JSON object with exactly these keys:
+    Return a JSON object:
     - is_insider: (boolean)
     - insider_conviction: (int 1-10)
     - is_golden_sweep: (boolean)
@@ -80,7 +73,6 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data)
     - stop_loss: (float)
     - analysis: (Critical 4-5 sentence analysis in HTML format.)
     """
-
     for key in keys:
         try:
             client = genai.Client(api_key=key)
@@ -103,12 +95,8 @@ def fetch_news(ticker, query_type="general"):
         return "\n".join(results)
     except: return "No recent data found."
 
-async def process_message(message):
-    trade_info = f"Author: {message.author}\nContent: {message.content}\n"
-    if message.embeds:
-        for e in message.embeds: trade_info += f"Embed: {e.title} - {e.description}\n"
-    
-    # Ticker Extraction
+async def perform_full_analysis(trade_info, msg_time=None):
+    """Core analysis logic reusable for Discord or Telegram."""
     match = re.search(r'\$([A-Z]{1,5})', trade_info)
     if not match: match = re.search(r'([A-Z]{1,5})\s+(?:Calls|Puts|\$)', trade_info)
     ticker = match.group(1) if match else "SPY"
@@ -118,37 +106,17 @@ async def process_message(message):
         info = tk.info
         hist_full = tk.history(period="1y")
         
-        # 1. Market Cap & ADV
+        # Market Price at time of trade
+        if msg_time:
+            hist_1m = tk.history(start=msg_time - timedelta(minutes=5), end=msg_time + timedelta(minutes=5), interval="1m")
+            entry_price = round(hist_1m['Close'].iloc[0], 2) if not hist_1m.empty else round(hist_full['Close'].iloc[-1], 2)
+        else:
+            entry_price = round(hist_full['Close'].iloc[-1], 2)
+
         mkt_cap = info.get('marketCap', 0)
         avg_vol = info.get('averageVolume', 1)
         
-        # 2. Extract Option details (Strike/Expiry/Type) from text
-        # Example: "$250 Calls expiring Jan 16"
-        strike_match = re.search(r'\$?(\d+(?:\.\d+)?)\s*(?:Call|Put)', trade_info, re.I)
-        type_match = re.search(r'(Call|Put)s?', trade_info, re.I)
-        vol_match = re.search(r'(\d{1,3}(?:,\d{3})*)\s*contracts', trade_info, re.I)
-        
-        option_context = "Option Data: "
-        if strike_match and type_match and tk.options:
-            target_strike = float(strike_match.group(1))
-            opt_type = type_match.group(1).upper()
-            trade_vol = int(vol_match.group(1).replace(',', '')) if vol_match else 0
-            
-            # Use first available expiry as proxy if none parsed
-            chain = tk.option_chain(tk.options[0])
-            opts = chain.calls if "CALL" in opt_type else chain.puts
-            # Find specific strike
-            row = opts[opts['strike'] == target_strike]
-            if not row.empty:
-                oi = row['openInterest'].iloc[0]
-                iv = row['impliedVolatility'].iloc[0] * 100
-                is_golden = trade_vol > oi if oi > 0 else False
-                option_context += f"Strike ${target_strike} {opt_type}, OI: {oi}, IV: {iv:.1f}%, Volume: {trade_vol} {'(GOLDEN SWEEP!)' if is_golden else ''}"
-            else: option_context += "Strike not found in front-month."
-        else: option_context += "Could not parse option specifics."
-
-        # Technicals & Macro
-        entry_price = round(hist_full['Close'].iloc[-1], 2)
+        # Technicals
         sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2)
         rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2)
         macro = await get_macro_context()
@@ -156,32 +124,33 @@ async def process_message(message):
         market_data = (
             f"Ticker: {ticker} @ ${entry_price} | Market Cap: ${mkt_cap/1e9:.1f}B | ADV: {avg_vol:,}\n"
             f"Technicals: RSI={rsi}, 50SMA=${sma50}\n"
-            f"{option_context}\n"
             f"Macro: {macro}\n"
             f"Earnings: {tk.calendar.get('Earnings Date', ['N/A'])[0] if isinstance(tk.calendar, dict) else 'N/A'}"
         )
-        await asyncio.sleep(3)
-    except Exception as e:
-        entry_price, market_data = 0, f"Data fetch failed: {e}"
+        await asyncio.sleep(2)
+    except:
+        entry_price, market_data = 0, "Data fetch failed."
 
     news = fetch_news(ticker)
     sec = fetch_news(ticker, query_type="sec")
     stats = get_performance_stats()
     
     data = await analyze_with_ai_retry(trade_info, news + "\n" + sec, stats, market_data)
-    if not data: return
+    if not data: return None, ticker, stats, entry_price
 
     if entry_price > 0:
         log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], 
                   data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'])
+    
+    return data, ticker, stats, entry_price
 
-    # Build Advanced Telegram Message
+def format_telegram_msg(ticker, data, stats, label="SIGNAL"):
     insider_tag = "🚨 <b>INSIDER ALERT</b>" if data['is_insider'] else "📊 <b>STANDARD FLOW</b>"
     golden_tag = "🏆 <b>GOLDEN SWEEP DETECTED</b>\n" if data.get('is_golden_sweep') else ""
     iv_box = f"⚠️ <b>{data['iv_warning']}</b>\n━━━━━━━━━━━━━━━━━\n" if data['iv_warning'] else ""
     
-    final_msg = (
-        f"🚀 <b>FLOWGOD SIGNAL: {ticker}</b>\n"
+    return (
+        f"🚀 <b>FLOWGOD {label}: {ticker}</b>\n"
         f"{insider_tag}\n"
         f"{golden_tag}"
         f"━━━━━━━━━━━━━━━━━\n"
@@ -204,29 +173,46 @@ async def process_message(message):
         f"📈 <i>{stats}</i>"
     )
 
-    try:
-        await tg_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=final_msg, parse_mode='HTML')
-    except Exception as e: print(f"Telegram error: {e}")
+async def handle_telegram_inbound(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle copy-pasted alerts in Telegram."""
+    if str(update.effective_chat.id) != str(TELEGRAM_CHAT_ID): return
+    
+    text = update.message.text
+    status_msg = await update.message.reply_text("🧠 <b>FlowGod is analyzing...</b>", parse_mode='HTML')
+    
+    data, ticker, stats, entry_price = await perform_full_analysis(text)
+    
+    if data:
+        final_msg = format_telegram_msg(ticker, data, stats, label="REQUEST")
+        await update.message.reply_text(final_msg, parse_mode='HTML')
+    else:
+        await update.message.reply_text("❌ Analysis failed. Check Gemini API keys.")
+    
+    await status_msg.delete()
 
 async def main():
-    if not DISCORD_TOKEN or not GEMINI_API_KEYS: return
-    client = discord.Client(intents=discord.Intents.default())
-    @client.event
-    async def on_ready():
-        if os.path.exists(PROCESSED_FILE):
-            with open(PROCESSED_FILE, 'r') as f: processed = json.load(f)
-        else: processed = []
-        new_processed = []
-        for guild in client.guilds:
-            for channel in guild.text_channels:
-                if any(k in channel.name.lower() for k in ["unusual", "whale", "flow"]):
-                    async for message in channel.history(limit=10):
-                        if message.id not in processed:
-                            await process_message(message)
-                            new_processed.append(message.id)
-        with open(PROCESSED_FILE, 'w') as f: json.dump(processed + new_processed, f)
-        await client.close()
-    await client.start(DISCORD_TOKEN)
+    if not TELEGRAM_TOKEN: return
+    
+    # Start Telegram Listener in background
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_telegram_inbound))
+    
+    print("🚀 FlowGod is now listening for Telegram requests...")
+    # Run the bot polling in a separate task
+    asyncio.create_task(app.run_polling())
+
+    # Keep the script alive for Discord monitoring too (if ever enabled)
+    if DISCORD_TOKEN:
+        client = discord.Client(intents=discord.Intents.default())
+        @client.event
+        async def on_ready():
+            print(f"Logged in as {client.user} (Passive Monitor)")
+        
+        # Note: run_polling is non-blocking when used this way
+        await client.start(DISCORD_TOKEN)
+    else:
+        # If no Discord token, just hang the main loop
+        while True: await asyncio.sleep(3600)
 
 if __name__ == "__main__":
     asyncio.run(main())
