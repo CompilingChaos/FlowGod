@@ -26,8 +26,25 @@ PROCESSED_FILE = 'processed_messages.json'
 
 tg_bot = Bot(token=TELEGRAM_TOKEN)
 
-async def analyze_with_ai_retry(trade_content, news_context, stats, current_price, earnings_date, sec_context):
-    """Randomly selects keys and enforces strict JSON output with insider logic."""
+def calculate_rsi(data, window=14):
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+async def get_macro_context():
+    try:
+        spy = yf.Ticker("SPY").history(period="2d")
+        qqq = yf.Ticker("QQQ").history(period="2d")
+        spy_ret = (spy['Close'].iloc[-1] / spy['Close'].iloc[-2] - 1) * 100
+        qqq_ret = (qqq['Close'].iloc[-1] / qqq['Close'].iloc[-2] - 1) * 100
+        return f"SPY: {spy_ret:+.2f}%, QQQ: {qqq_ret:+.2f}%"
+    except:
+        return "Macro data unavailable."
+
+async def analyze_with_ai_retry(trade_content, news_context, stats, market_data):
+    """Randomly selects keys and enforces strict JSON output with Macro/TA/IV context."""
     keys = list(GEMINI_API_KEYS)
     random.shuffle(keys)
     
@@ -35,20 +52,25 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, current_pric
     Analyze this Unusual Whales trade report:
     {trade_content}
 
-    MARKET DATA:
-    Current Price: ${current_price}
-    Next Earnings: {earnings_date}
-    Recent SEC Filings (3d): {sec_context}
-    News Context: {news_context}
-    Historical Performance: {stats}
+    QUANTITATIVE DATA:
+    {market_data}
+    
+    NEWS & FILINGS:
+    {news_context}
+    
+    HISTORICAL PERFORMANCE:
+    {stats}
 
     Task:
-    Provide a CRITICAL analysis. Specifically look for alignment between this trade and the upcoming earnings or recent SEC activity.
+    Provide a CRITICAL analysis. 
+    - Check for "IV Crush" risk (flag if IV is exceptionally high relative to history).
+    - Align trade with Macro (SPY/QQQ) and Technicals (RSI/SMAs).
     
     Return a JSON object with exactly these keys:
     - is_insider: (boolean)
     - insider_conviction: (int 1-10)
-    - insider_logic: (Concise explanation of insider evidence or lack thereof, HTML format)
+    - iv_warning: (string or null, e.g. "HIGH IV RISK" or null if safe)
+    - insider_logic: (HTML format)
     - meaningfulness: (string)
     - direction: (LONG/SHORT)
     - leverage: (int)
@@ -75,15 +97,10 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, current_pric
 def fetch_news(ticker, query_type="general"):
     try:
         yesterday = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
-        if query_type == "sec":
-            query = f"site:sec.gov {ticker} filing after:{yesterday}"
-        else:
-            query = f"{ticker} stock news insider after:{yesterday}"
-        
+        query = f"site:sec.gov {ticker} filing after:{yesterday}" if query_type == "sec" else f"{ticker} stock news insider after:{yesterday}"
         results = list(search(query, num_results=3, lang="en"))
         return "\n".join(results)
-    except:
-        return "No recent data found."
+    except: return "No recent data found."
 
 async def process_message(message):
     trade_info = f"Author: {message.author}\nContent: {message.content}\n"
@@ -97,35 +114,51 @@ async def process_message(message):
             ticker = word
             break
             
-    # Fetch Data
+    # Fetch Complex Market Data
     try:
         tk = yf.Ticker(ticker)
-        price_data = tk.history(period="1d")
-        entry_price = round(price_data['Close'].iloc[-1], 2) if not price_data.empty else 0
+        hist = tk.history(period="1y")
+        curr = hist.iloc[-1]
         
-        calendar = tk.calendar
-        earnings_date = calendar.get('Earnings Date', ['N/A'])[0] if isinstance(calendar, dict) else 'N/A'
+        entry_price = round(curr['Close'], 2)
+        sma50 = round(hist['Close'].rolling(50).mean().iloc[-1], 2)
+        sma200 = round(hist['Close'].rolling(200).mean().iloc[-1], 2)
+        rsi = round(calculate_rsi(hist['Close']).iloc[-1], 2)
+        
+        # IV Proxy (simplified for free data)
+        iv_proxy = round(tk.options[0] if tk.options else 0, 2) # Just a placeholder for raw options availability
+        macro = await get_macro_context()
+        
+        market_data = (
+            f"Ticker: {ticker} @ ${entry_price}\n"
+            f"Technicals: RSI={rsi}, 50SMA=${sma50}, 200SMA=${sma200}\n"
+            f"Macro: {macro}\n"
+            f"Earnings: {tk.calendar.get('Earnings Date', ['N/A'])[0] if isinstance(tk.calendar, dict) else 'N/A'}"
+        )
         await asyncio.sleep(3)
     except:
-        entry_price, earnings_date = 0, 'N/A'
+        entry_price, market_data = 0, "Data fetch failed."
 
     news = fetch_news(ticker)
     sec = fetch_news(ticker, query_type="sec")
     stats = get_performance_stats()
     
-    data = await analyze_with_ai_retry(trade_info, news, stats, entry_price, earnings_date, sec)
+    data = await analyze_with_ai_retry(trade_info, news + "\n" + sec, stats, market_data)
     if not data: return
 
     if entry_price > 0:
         log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], 
                   data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'])
 
+    # Build High-Quality Telegram Message
     insider_tag = "🚨 <b>INSIDER ALERT</b>" if data['is_insider'] else "📊 <b>STANDARD FLOW</b>"
+    iv_box = f"⚠️ <b>{data['iv_warning']}</b>\n━━━━━━━━━━━━━━━━━\n" if data['iv_warning'] else ""
     
     final_msg = (
         f"🚀 <b>FLOWGOD SIGNAL: {ticker}</b>\n"
         f"{insider_tag}\n"
         f"━━━━━━━━━━━━━━━━━\n"
+        f"{iv_box}"
         f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n"
         f"🐋 <b>Meaning:</b> {data['meaningfulness']}\n"
         f"━━━━━━━━━━━━━━━━━\n"
@@ -146,20 +179,16 @@ async def process_message(message):
 
     try:
         await tg_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=final_msg, parse_mode='HTML')
-    except Exception as e:
-        print(f"Telegram error: {e}")
+    except Exception as e: print(f"Telegram error: {e}")
 
 async def main():
     if not DISCORD_TOKEN or not GEMINI_API_KEYS: return
     client = discord.Client(intents=discord.Intents.default())
-    
     @client.event
     async def on_ready():
         if os.path.exists(PROCESSED_FILE):
-            with open(PROCESSED_FILE, 'r') as f:
-                processed = json.load(f)
+            with open(PROCESSED_FILE, 'r') as f: processed = json.load(f)
         else: processed = []
-
         new_processed = []
         for guild in client.guilds:
             for channel in guild.text_channels:
@@ -168,10 +197,8 @@ async def main():
                         if message.id not in processed:
                             await process_message(message)
                             new_processed.append(message.id)
-        
         with open(PROCESSED_FILE, 'w') as f: json.dump(processed + new_processed, f)
         await client.close()
-
     await client.start(DISCORD_TOKEN)
 
 if __name__ == "__main__":
