@@ -97,18 +97,32 @@ def fetch_news(ticker, query_type="general"):
 
 async def perform_full_analysis(trade_info, msg_time=None):
     """Core analysis logic reusable for Discord or Telegram."""
-    # --- DEEP EXTRACTION PARSER ---
+    # --- DEEP EXTRACTION PARSER (UPDATED FOR TIME & SALES) ---
+    # Try the standard format first
     match = re.search(r'\$([A-Z]{1,5})', trade_info)
     if not match: match = re.search(r'([A-Z]{1,5})\s+(?:Calls|Puts|\$)', trade_info)
-    ticker = match.group(1) if match else "SPY"
     
-    # Extract premium, strike, and expiry for better AI context
-    premium = re.search(r'Prem(?:ium)?:\s*\$([\d\.]+[KMB]?)', trade_info, re.I)
-    strike = re.search(r'Strike\s*\$?([\d\.]+)', trade_info, re.I)
-    expiry = re.search(r'Exp(?:iring)?\s*([\d\-\/]{5,10})', trade_info, re.I)
+    # Try the "Time & Sales" format: TICKER STRIKE C/P EXPIRY
+    # Example: MRVL 80 C 03/06/2026
+    ts_match = re.search(r'^([A-Z]{1,5})\s+([\d\.]+)\s+([CP])\s+([\d\/]{8,10})', trade_info, re.M)
+    
+    if ts_match:
+        ticker = ts_match.group(1)
+        strike_val = ts_match.group(2)
+        option_type = "Calls" if ts_match.group(3) == "C" else "Puts"
+        expiry_val = ts_match.group(4)
+    else:
+        ticker = match.group(1) if match else "SPY"
+        strike_val = "N/A"
+        expiry_val = "N/A"
+        option_type = "Options"
+
+    # Extract additional metrics
+    premium = re.search(r'Prem(?:ium)?:\s*\$([\d\.,]+[KMB]?)', trade_info, re.I)
+    vol_oi = re.search(r'Vol/OI:\s*([\d\.]+)', trade_info, re.I)
     
     ticker = ticker.upper()
-    print(f"🔍 Analyzing {ticker} (Premium: {premium.group(1) if premium else 'N/A'})")
+    print(f"🔍 Analyzing {ticker} {option_type} (Prem: {premium.group(1) if premium else 'N/A'} | Vol/OI: {vol_oi.group(1) if vol_oi else 'N/A'})")
 
     try:
         tk = yf.Ticker(ticker)
