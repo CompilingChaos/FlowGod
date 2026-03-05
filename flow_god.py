@@ -211,19 +211,9 @@ def format_telegram_msg(ticker, data, stats, label="SIGNAL"):
     insider_tag = "🚨 <b>INSIDER ALERT</b>" if data['is_insider'] else "📊 <b>STANDARD FLOW</b>"
     golden_tag = "🏆 <b>GOLDEN SWEEP DETECTED</b>\n" if data.get('is_golden_sweep') else ""
     iv_box = f"⚠️ <b>{data['iv_warning']}</b>\n━━━━━━━━━━━━━━━━━\n" if data['iv_warning'] else ""
-    return (f"🚀 <b>FLOWGOD {label}: {ticker}</b>\n{insider_tag}\n{golden_tag}━━━━━━━━━━━━━━━━━\n{iv_box}"
+    return (f"<b>FLOWGOD: {ticker}</b>\n{insider_tag}\n{golden_tag}━━━━━━━━━━━━━━━━━\n{iv_box}"
             f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n📊 <b>Action:</b> <code>{data['direction']}</code>\n"
             f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n🧐 <b>ANALYSIS:</b> <i>{data['analysis']}</i>")
-
-async def handle_telegram_inbound(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if str(update.effective_chat.id) != str(TELEGRAM_CHAT_ID): return
-    status_msg = await update.message.reply_text("🧠 <b>FlowGod is analyzing...</b>", parse_mode='HTML')
-    data, ticker, stats, entry_price = await perform_full_analysis(update.message.text)
-    if data and data != "STORED" and data['insider_conviction'] >= 6:
-        await update.message.reply_text(format_telegram_msg(ticker, data, stats, "REQUEST"), parse_mode='HTML')
-    elif data and data != "STORED":
-        await update.message.reply_text(f"🔈 Muting {ticker}: Conviction {data['insider_conviction']} too low.")
-    await status_msg.delete()
 
 async def process_scraped_messages():
     if not os.path.exists('unusual_messages.json'): return
@@ -237,24 +227,20 @@ async def process_scraped_messages():
         data, ticker, stats, entry_price = await perform_full_analysis(content)
         if data and data != "STORED" and data['insider_conviction'] >= 6:
             bot = Bot(token=TELEGRAM_TOKEN)
-            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=format_telegram_msg(ticker, data, stats, "AUTOPILOT"), parse_mode='HTML')
+            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=format_telegram_msg(ticker, data, stats), parse_mode='HTML')
         processed.append(content)
         if len(processed) > 500: processed.pop(0)
     with open(PROCESSED_FILE, 'w') as f: json.dump(processed, f)
 
 async def main():
     if not TELEGRAM_TOKEN: return
+    # FlowGod now runs exclusively in Autopilot mode via GitHub Actions
     if os.path.exists('unusual_messages.json'):
         await process_scraped_messages()
         if datetime.now().hour >= 21: await send_daily_trends()
         return
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_telegram_inbound))
-    asyncio.create_task(app.run_polling())
-    if DISCORD_TOKEN:
-        client = discord.Client(intents=discord.Intents.default()); await client.start(DISCORD_TOKEN)
     else:
-        while True: await asyncio.sleep(3600)
+        print("💡 No message file found. FlowGod is optimized for remote Autopilot execution.")
 
 if __name__ == "__main__":
     asyncio.run(main())
