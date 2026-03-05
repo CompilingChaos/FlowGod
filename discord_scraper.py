@@ -3,7 +3,7 @@ import json
 import os
 import random
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import stealth
 from bs4 import BeautifulSoup
 from datetime import datetime
 
@@ -31,7 +31,7 @@ async def scrape_discord():
         page = await context.new_page()
         
         # Apply stealth plugins
-        await stealth_async(page)
+        await stealth(page)
         
         print(f"🚀 Navigating to {DISCORD_URL}...")
         await page.goto(DISCORD_URL)
