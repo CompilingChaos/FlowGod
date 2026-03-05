@@ -31,25 +31,34 @@ async def scrape_discord():
         page = await context.new_page()
         
         # Apply stealth plugins
-        if hasattr(playwright_stealth, 'stealth') and callable(playwright_stealth.stealth):
-            playwright_stealth.stealth(page)
-        elif hasattr(playwright_stealth, 'stealth') and hasattr(playwright_stealth.stealth, 'stealth'):
-            # Some versions might have it nested
-            playwright_stealth.stealth.stealth(page)
-        else:
-            print("⚠️ Warning: Could not find callable stealth function.")
+        try:
+            from playwright_stealth import stealth
+            stealth(page)
+        except Exception as e:
+            print(f"⚠️ Warning: Could not apply stealth. {e}")
         
         print(f"🚀 Navigating to {DISCORD_URL}...")
         await page.goto(DISCORD_URL)
         
-        # Wait for the message container to appear (Discord's DOM uses complex selectors)
-        # We wait for the message list to load
+        # Extra wait for the page to stabilize
+        await page.wait_for_load_state("networkidle")
+        
+        print(f"👀 Page title: {await page.title()}")
+        
+        # Wait for the message container to appear
         try:
-            await page.wait_for_selector('ol[class*="messageListItem"]', timeout=30000)
+            # We look for ANY message list item (Discord's class name for messages often starts with "message_")
+            await page.wait_for_selector('li[class*="messageListItem"], ol[class*="messageListItem"]', timeout=45000)
         except Exception as e:
-            print(f"⚠️ Warning: Could not find messages list. Discord might be asking for verification or loading slowly.")
+            print(f"⚠️ Warning: Could not find messages list. Taking debug screenshot...")
             # Take a screenshot to debug remotely (saved as artifact in GH Actions)
             await page.screenshot(path="debug_discord.png")
+            
+            # Check for "Login" or "Verify" to help debugging
+            content = await page.content()
+            if "Login" in content: print("❌ Detected 'Login' page. Session might be expired.")
+            elif "Verify you are human" in content: print("❌ Detected 'hCaptcha/Verification' page.")
+            
             await browser.close()
             return []
 
