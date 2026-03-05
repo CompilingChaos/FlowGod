@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 import time
 from datetime import datetime, timedelta
 import re
-from database import init_db, log_trade, get_performance_stats
+from database import init_db, log_trade, get_performance_stats, log_long_term_flow, get_daily_trends
 
 load_dotenv()
 init_db()
@@ -27,7 +27,56 @@ PROCESSED_FILE = 'processed_messages.json'
 
 STOP_WORDS = {"CALL", "PUT", "ALERT", "BUY", "SELL", "LONG", "SHORT", "ASK", "BID", "FLOW", "SIZE", "SWEEP", "BLOCK"}
 
+def parse_premium(prem_str):
+    """Convert premium string like $255,500 or $1.2M to float."""
+    if not prem_str: return 0
+    val = prem_str.replace('$', '').replace(',', '').strip()
+    multiplier = 1
+    if 'K' in val.upper():
+        multiplier = 1000
+        val = val.upper().replace('K', '')
+    elif 'M' in val.upper():
+        multiplier = 1000000
+        val = val.upper().replace('M', '')
+    elif 'B' in val.upper():
+        multiplier = 1000000000
+        val = val.upper().replace('B', '')
+    try:
+        return float(val) * multiplier
+    except:
+        return 0
+
+def is_long_term(expiry_str):
+    """Check if expiry is more than 30 days away."""
+    if not expiry_str or expiry_str == "N/A": return False
+    try:
+        exp_date = datetime.strptime(expiry_str, '%m/%d/%Y')
+        return (exp_date - datetime.now()).days > 30
+    except:
+        try:
+            exp_date = datetime.strptime(expiry_str, '%Y-%m-%d')
+            return (exp_date - datetime.now()).days > 30
+        except:
+            return False
+
+async def send_daily_trends():
+    """Compile and send daily smart money trends to Telegram."""
+    trends = get_daily_trends()
+    if not trends: return
+    
+    msg = "📊 <b>END-OF-DAY SMART MONEY TRENDS</b>\n"
+    msg += "<i>(Long-term institutional flow >30 DTE)</i>\n"
+    msg += "━━━━━━━━━━━━━━━━━\n"
+    
+    for ticker, direction, total_prem, count in trends:
+        emoji = "🟢" if direction == "Calls" else "🔴"
+        msg += f"{emoji} <b>{ticker}</b>: ${total_prem/1e6:.1f}M ({count} orders)\n"
+    
+    bot = Bot(token=TELEGRAM_TOKEN)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='HTML')
+
 def calculate_rsi(data, window=14):
+# ... rest of the helper functions
     delta = data.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
@@ -107,25 +156,45 @@ async def perform_full_analysis(trade_info, msg_time=None):
     ts_match = re.search(r'^([A-Z]{1,5})\s+([\d\.]+)\s+([CP])\s+([\d\/]{8,10})', trade_info, re.M)
     
     if ts_match:
-        ticker = ts_match.group(1)
+        ticker = ts_match.group(1).upper()
         strike_val = ts_match.group(2)
         option_type = "Calls" if ts_match.group(3) == "C" else "Puts"
         expiry_val = ts_match.group(4)
     else:
-        ticker = match.group(1) if match else "SPY"
+        ticker = match.group(1).upper() if match else "SPY"
         strike_val = "N/A"
         expiry_val = "N/A"
         option_type = "Options"
 
     # Extract additional metrics
-    premium = re.search(r'Prem(?:ium)?:\s*\$([\d\.,]+[KMB]?)', trade_info, re.I)
+    prem_match = re.search(r'Prem(?:ium)?:\s*\$([\d\.,]+[KMB]?)', trade_info, re.I)
+    premium_raw = prem_match.group(1) if prem_match else "0"
+    premium_usd = parse_premium(premium_raw)
+    
+    # --- FILTER 1: PREMIUM FLOOR ($100k) ---
+    if premium_usd < 100000:
+        print(f"⏩ Skipping {ticker}: Premium ${premium_usd:,.0f} below $100k floor.")
+        return None, ticker, None, 0
+
+    # --- FILTER 2: LONG-TERM STORAGE (>30 Days) ---
+    if is_long_term(expiry_val):
+        print(f"📦 Storing {ticker} in Long-Term DB (Expiry: {expiry_val})")
+        vol_oi_match = re.search(r'Vol/OI:\s*([\d\.]+)', trade_info, re.I)
+        otm_match = re.search(r'OTM:\s*([-\d\.\%]+)', trade_info, re.I)
+        bid_ask_match = re.search(r'Bid/Ask %:\s*([\d\/]+)', trade_info, re.I)
+        
+        log_long_term_flow(ticker, option_type, strike_val, expiry_val, premium_usd, 
+                          float(vol_oi_match.group(1)) if vol_oi_match else 0, 
+                          float(otm_match.group(1).replace('%','')) if otm_match else 0, 
+                          bid_ask_match.group(1) if bid_ask_match else "N/A")
+        return "STORED", ticker, None, 0
+
     vol_oi = re.search(r'Vol/OI:\s*([\d\.]+)', trade_info, re.I)
     otm = re.search(r'OTM:\s*([-\d\.\%]+)', trade_info, re.I)
     bid_ask = re.search(r'Bid/Ask %:\s*([\d\/]+)', trade_info, re.I)
     multi_leg = re.search(r'Multi-leg Volume:\s*([\d\%]+)', trade_info, re.I)
     
-    ticker = ticker.upper()
-    print(f"🔍 Analyzing {ticker} {option_type} (Prem: {premium.group(1) if premium else 'N/A'} | Vol/OI: {vol_oi.group(1) if vol_oi else 'N/A'})")
+    print(f"🔥 Analyzing Hot Flow: {ticker} {option_type} (${premium_usd:,.0f})")
 
     try:
         tk = yf.Ticker(ticker)
@@ -268,6 +337,10 @@ async def main():
     # Mode 1: Processing Scraped Messages (for GitHub Actions)
     if os.path.exists('unusual_messages.json'):
         await process_scraped_messages()
+        # If it's near market close (e.g., 21:00 UTC+), send the daily trends summary
+        current_hour = datetime.now().hour
+        if current_hour >= 21:
+            await send_daily_trends()
         return
 
     # Mode 2: Interactive Telegram Listener (for local run)

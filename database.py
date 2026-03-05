@@ -25,7 +25,44 @@ def init_db():
                 exit_reason TEXT
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS long_term_flow (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT,
+                entry_time TIMESTAMP,
+                direction TEXT,
+                strike REAL,
+                expiry TEXT,
+                premium REAL,
+                vol_oi REAL,
+                otm REAL,
+                bid_ask TEXT
+            )
+        ''')
         conn.commit()
+
+def log_long_term_flow(ticker, direction, strike, expiry, premium, vol_oi, otm, bid_ask):
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO long_term_flow (ticker, entry_time, direction, strike, expiry, premium, vol_oi, otm, bid_ask)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (ticker, datetime.now().isoformat(), direction, strike, expiry, premium, vol_oi, otm, bid_ask))
+        conn.commit()
+
+def get_daily_trends():
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        today = datetime.now().strftime('%Y-%m-%d')
+        cursor.execute('''
+            SELECT ticker, direction, SUM(premium) as total_prem, COUNT(*) as count 
+            FROM long_term_flow 
+            WHERE entry_time LIKE ?
+            GROUP BY ticker, direction
+            ORDER BY total_prem DESC
+            LIMIT 10
+        ''', (f'{today}%',))
+        return cursor.fetchall()
 
 def log_trade(ticker, direction, leverage, timeframe_hours, conviction, entry_price, target, stop):
     with sqlite3.connect(DB_NAME) as conn:
