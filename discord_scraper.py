@@ -30,8 +30,15 @@ async def scrape_discord():
         context = await browser.new_context(storage_state=SESSION_FILE)
         page = await context.new_page()
         
-        # Apply stealth plugins
-        await stealth(page)
+        # Apply stealth plugins (synchronous call)
+        try:
+            stealth(page)
+        except TypeError:
+            # Fallback if stealth is imported as a module
+            if hasattr(stealth, 'stealth'):
+                stealth.stealth(page)
+            else:
+                raise
         
         print(f"🚀 Navigating to {DISCORD_URL}...")
         await page.goto(DISCORD_URL)
