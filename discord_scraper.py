@@ -3,7 +3,7 @@ import json
 import os
 import random
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth
+from playwright_stealth import stealth as playwright_stealth_func
 from bs4 import BeautifulSoup
 from datetime import datetime
 
@@ -30,15 +30,8 @@ async def scrape_discord():
         context = await browser.new_context(storage_state=SESSION_FILE)
         page = await context.new_page()
         
-        # Apply stealth plugins (synchronous call)
-        try:
-            stealth(page)
-        except TypeError:
-            # Fallback if stealth is imported as a module
-            if hasattr(stealth, 'stealth'):
-                stealth.stealth(page)
-            else:
-                raise
+        # Apply stealth plugins
+        playwright_stealth_func(page)
         
         print(f"🚀 Navigating to {DISCORD_URL}...")
         await page.goto(DISCORD_URL)
