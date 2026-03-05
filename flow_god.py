@@ -5,6 +5,7 @@ import json
 import discord
 import yfinance as yf
 from google import genai
+from google.genai import types
 from googlesearch import search
 from telegram import Bot
 from dotenv import load_dotenv
@@ -23,38 +24,30 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 PROCESSED_FILE = 'processed_messages.json'
 
-# Initialize Telegram
 tg_bot = Bot(token=TELEGRAM_TOKEN)
 
 async def analyze_with_ai_retry(trade_content, news_context, stats, current_price):
-    """Tries all available Gemini API keys with a delay on failure."""
+    """Randomly selects keys and enforces strict JSON output."""
     keys = list(GEMINI_API_KEYS)
-    random.shuffle(keys)
+    random.shuffle(keys) # Shuffling handles the "random choice" and "retry" in one
     
     prompt = f"""
     Analyze this Unusual Whales trade report:
     {trade_content}
 
-    Current Market Price: ${current_price}
-    News Context (Last 48h):
-    {news_context}
-    Historical Strategy Stats:
-    {stats}
+    Current Price: ${current_price}
+    News Context: {news_context}
+    Historical Performance: {stats}
 
-    Task:
-    1. Is this a potential insider trade? (Conviction score 1-10)
-    2. Meaningfulness vs daily volume.
-    3. Direction (LONG or SHORT).
-    4. Leverage (e.g., 5, 10).
-    5. Timeframe (Hours to hold, e.g., 24, 168).
-    6. Target Exit Price ($).
-    7. Stop Loss Price ($).
-    8. Analysis explanation.
-
-    CRITICAL: You MUST include a JSON block at the end of your response with these exact keys:
-    `{{ "direction": "LONG/SHORT", "leverage": int, "timeframe_hours": int, "conviction": int, "target": float, "stop": float }}`
-
-    Format the final output for Telegram using HTML tags (<b>, <i>).
+    Return a JSON object with exactly these keys:
+    - insider_conviction: (int 1-10)
+    - meaningfulness: (brief string)
+    - direction: (LONG/SHORT)
+    - leverage: (int)
+    - timeframe_hours: (int)
+    - target_price: (float)
+    - stop_loss: (float)
+    - analysis: (detailed HTML string for Telegram using <b>, <i> tags)
     """
 
     for key in keys:
@@ -62,14 +55,17 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, current_pric
             client = genai.Client(api_key=key)
             response = client.models.generate_content(
                 model='gemini-3-flash-preview',
-                contents=prompt
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type='application/json'
+                )
             )
-            return response.text
+            return json.loads(response.text)
         except Exception as e:
-            print(f"Key {key[:8]}... failed: {e}. Trying next key in 5s...")
+            print(f"Key failed: {e}. Retrying...")
             await asyncio.sleep(5)
     
-    return "Error: Gemini failed."
+    return None
 
 def fetch_news(ticker):
     try:
@@ -93,7 +89,6 @@ async def process_message(message):
             ticker = word
             break
             
-    # Fetch current price
     try:
         price_data = yf.Ticker(ticker).history(period="1d")
         entry_price = round(price_data['Close'].iloc[-1], 2) if not price_data.empty else 0
@@ -103,21 +98,29 @@ async def process_message(message):
 
     news = fetch_news(ticker)
     stats = get_performance_stats()
-    analysis = await analyze_with_ai_retry(trade_info, news, stats, entry_price)
+    data = await analyze_with_ai_retry(trade_info, news, stats, entry_price)
     
-    # Parse JSON from AI response
-    try:
-        json_match = re.search(r'\{.*\}', analysis, re.DOTALL)
-        data = json.loads(json_match.group())
-        
-        # Log trade for future validation
-        if entry_price > 0:
-            log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], 
-                      data['conviction'], entry_price, data['target'], data['stop'])
-    except Exception as e:
-        print(f"Failed to parse AI JSON: {e}")
+    if not data:
+        print("Analysis failed completely.")
+        return
 
-    final_msg = f"🚀 <b>FlowGod Analysis: {ticker}</b>\n\n{analysis}\n\n📊 {stats}"
+    # Log to DB
+    if entry_price > 0:
+        log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], 
+                  data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'])
+
+    # Build Telegram Message
+    final_msg = (
+        f"🚀 <b>FlowGod Analysis: {ticker}</b>\n\n"
+        f"<b>Direction:</b> {data['direction']} ({data['leverage']}x)\n"
+        f"<b>Conviction:</b> {data['insider_conviction']}/10\n"
+        f"<b>Target:</b> ${data['target_price']}\n"
+        f"<b>Stop Loss:</b> ${data['stop_loss']}\n"
+        f"<b>Timeframe:</b> {data['timeframe_hours']}h\n\n"
+        f"<b>Analysis:</b>\n{data['analysis']}\n\n"
+        f"📊 <i>{stats}</i>"
+    )
+
     try:
         await tg_bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=final_msg, parse_mode='HTML')
     except Exception as e:
