@@ -30,12 +30,19 @@ async def scrape_discord():
         context = await browser.new_context(storage_state=SESSION_FILE)
         page = await context.new_page()
         
-        # Apply stealth plugins
+        # Apply stealth plugins (Definitive Fix for 'module object is not callable')
         try:
-            from playwright_stealth import stealth
-            stealth(page)
+            import playwright_stealth
+            # 1. Try calling it as a function directly from the package
+            if callable(playwright_stealth.stealth):
+                playwright_stealth.stealth(page)
+            # 2. Try calling the function inside the submodule if the names collided
+            elif hasattr(playwright_stealth.stealth, 'stealth') and callable(playwright_stealth.stealth.stealth):
+                playwright_stealth.stealth.stealth(page)
+            else:
+                print("⚠️ Warning: Found stealth module/attribute but none are callable.")
         except Exception as e:
-            print(f"⚠️ Warning: Could not apply stealth. {e}")
+            print(f"⚠️ Warning: Stealth application failed. {e}")
         
         print(f"🚀 Navigating to {DISCORD_URL}...")
         await page.goto(DISCORD_URL)
