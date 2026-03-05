@@ -26,7 +26,7 @@ async def test_secrets():
         try:
             key = random.choice(gemini_keys)
             genai.configure(api_key=key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-2.0-flash-exp')
             response = model.generate_content("Hello, this is a secret test. Reply with 'OK'.")
             print(f"✅ Gemini API Test: {response.text.strip()}")
         except Exception as e:
