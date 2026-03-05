@@ -34,8 +34,8 @@ def log_trade(ticker, direction, leverage, timeframe_hours, conviction, entry_pr
             INSERT INTO trades (ticker, entry_time, direction, leverage, timeframe_hours, 
                               conviction_score, entry_price, target_price, stop_loss)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (ticker, direction.upper(), leverage, timeframe_hours, conviction, 
-              entry_price, target, stop))
+        ''', (ticker, datetime.now().isoformat(), direction.upper(), leverage, timeframe_hours, 
+              conviction, entry_price, target, stop))
         conn.commit()
 
 def get_performance_stats():
