@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import random
+import hashlib
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 from bs4 import BeautifulSoup
@@ -11,27 +12,38 @@ from datetime import datetime
 DISCORD_URL = "https://discord.com/channels/710524439133028512/1187484002844680354"
 SESSION_FILE = "discord_session.json"
 MESSAGES_FILE = "unusual_messages.json"
+PROCESSED_FILE = "processed_messages.json"
+
+def get_content_hash(text):
+    """Generate a unique hash for message content."""
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 async def scrape_discord():
-    # Random jitter: Wait 1 to 5 minutes before starting (SAFETY RESTORED)
+    # Load already processed hashes to avoid redundant work
+    processed_hashes = []
+    if os.path.exists(PROCESSED_FILE):
+        try:
+            with open(PROCESSED_FILE, 'r') as f:
+                processed_data = json.load(f)
+                # Handle both raw strings and existing hashes in the list
+                processed_hashes = [get_content_hash(m) if isinstance(m, str) else m for m in processed_data]
+        except: pass
+
+    # Random jitter: Wait 1 to 5 minutes before starting (SAFETY)
     jitter_seconds = random.randint(60, 300)
     print(f"⏳ Humanizing behavior: Sleeping for {jitter_seconds} seconds before scraping...")
     await asyncio.sleep(jitter_seconds)
 
     if not os.path.exists(SESSION_FILE):
-
         print(f"❌ Error: {SESSION_FILE} not found. Run 'python session_manager.py' locally first.")
         return []
 
     async with async_playwright() as p:
-        # Launching headless browser for GitHub Actions compatibility
         browser = await p.chromium.launch(headless=True)
-        
-        # Load saved session state
         context = await browser.new_context(storage_state=SESSION_FILE)
         page = await context.new_page()
         
-        # Apply stealth plugins (Definitive Fix for playwright-stealth 2.x)
+        # Apply stealth plugins
         try:
             stealth_applier = Stealth()
             await stealth_applier.apply_stealth_async(page)
@@ -41,67 +53,55 @@ async def scrape_discord():
         
         print(f"🚀 Navigating to {DISCORD_URL}...")
         await page.goto(DISCORD_URL)
-        
-        # Extra wait for the page to stabilize
         await page.wait_for_load_state("networkidle")
         
-        print(f"👀 Page title: {await page.title()}")
-        
-        # Wait for the message container to appear
+        # Wait for the message container
         try:
-            # We look for ANY message list item (Discord's class name for messages often starts with "message_")
-            await page.wait_for_selector('li[class*="messageListItem"], ol[class*="messageListItem"]', timeout=45000)
-        except Exception as e:
-            print(f"⚠️ Warning: Could not find messages list. Taking debug screenshot...")
-            # Take a screenshot to debug remotely (saved as artifact in GH Actions)
+            await page.wait_for_selector('li[class*="messageListItem"]', timeout=45000)
+        except Exception:
             await page.screenshot(path="debug_discord.png")
-            
-            # Check for "Login" or "Verify" to help debugging
-            content = await page.content()
-            if "Login" in content: print("❌ Detected 'Login' page. Session might be expired.")
-            elif "Verify you are human" in content: print("❌ Detected 'hCaptcha/Verification' page.")
-            
             await browser.close()
             return []
 
-        # Wait a bit for all embeds to load
+        # Wait a bit for embeds
         await asyncio.sleep(5)
         
         content = await page.content()
         soup = BeautifulSoup(content, 'html.parser')
-        
-        # Find all message items using broader selectors
-        # Discord uses li[class*="messageListItem"] or div[role="listitem"]
         message_items = soup.find_all(['li', 'div'], class_=lambda x: x and 'messageListItem' in x)
-        if not message_items:
-            # Fallback: look for any element that looks like a message container
-            message_items = soup.find_all('li', id=lambda x: x and x.startswith('chat-messages-'))
 
         messages_to_process = []
-        # Process the last few items found
-        for item in message_items[-15:]: 
-            if len(messages_to_process) >= 3:
-                break
-            
-            # --- BRUTE FORCE TEXT EXTRACTION ---
-            # Instead of looking for specific containers, we grab all text
-            # inside the list item that isn't UI junk (like "Reply" buttons)
+        # Look at the last 12 messages
+        # We process from NEWEST to OLDEST (bottom to top)
+        for item in reversed(message_items[-12:]):
             raw_text = item.get_text(separator=" ").strip()
+            # Clean noise
+            for n in ["(edited)", "NEW", "Reply", "Pins", "Threads"]: 
+                raw_text = raw_text.replace(n, "")
             
-            # Filter out common UI noise
-            noise = ["(edited)", "NEW", "Reply", "Pins", "Threads"]
-            for n in noise: raw_text = raw_text.replace(n, "")
+            content_text = raw_text.strip()
+            if len(content_text) < 15: continue
             
-            if len(raw_text) > 10: # Ignore empty/tiny items
-                messages_to_process.append({
-                    "content": raw_text.strip(),
-                    "timestamp": datetime.now().isoformat()
-                })
+            msg_hash = get_content_hash(content_text)
+            
+            # STOP as soon as we hit a message we've seen before
+            if msg_hash in processed_hashes:
+                print("📍 Reached 'Last Seen' message. Stopping extraction.")
+                break
+                
+            print(f"✨ New message detected: {content_text[:40]}...")
+            messages_to_process.append({
+                "content": content_text,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Simulate "reading" time for each new message
+            await asyncio.sleep(random.uniform(2, 5))
+            
+            # Limit per run to avoid mass-scraping flags
+            if len(messages_to_process) >= 8: break
 
-        print(f"✅ Scraped {len(messages_to_process)} message units via Brute Force.")
-
-        if not messages_to_process and message_items:
-            print(f"⚠️ Found {len(message_items)} potential items but failed to extract text. Check DOM structure.")
+        print(f"✅ Scraped {len(messages_to_process)} NEW message units.")
         await browser.close()
         return messages_to_process
 
