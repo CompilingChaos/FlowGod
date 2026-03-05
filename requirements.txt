@@ -5,3 +5,6 @@ python-telegram-bot
 aiohttp
 googlesearch-python
 yfinance
+playwright
+playwright-stealth
+beautifulsoup4

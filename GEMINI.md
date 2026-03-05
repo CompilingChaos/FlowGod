@@ -9,10 +9,14 @@ FlowGod monitors Discord for "Unusual Whales" reports, enriches them with real-t
 - [x] **Actionable Signals:** Calculation of trade "meaningfulness," recommended leverage, and direction.
 - [x] **Telegram Dispatcher:** Instant delivery of formatted alerts via Telegram bot.
 - [x] **GitHub Actions Runner:** Automated execution every 15 minutes with state persistence.
+- [ ] **Performance Database:** SQLite integration to track trade entry, recommended action, and leverage.
+- [ ] **Market Close Validator:** Daily post-market script to calculate Win/Loss/ROI for historical signals.
+- [ ] **AI Feedback Loop:** Dynamic "Strategy Insights" section in Telegram based on historical performance data.
 
 ## Infrastructure
 - **Language:** Python 3.10
-- **AI Platform:** Google Gemini (via `google-generativeai`)
+- **AI Platform:** Google Gemini (via `google-genai`)
+- **Database:** SQLite3 (Local file committed back to repo)
 - **Messaging:** `discord.py`, `python-telegram-bot`
 - **Deployment:** GitHub Actions
 

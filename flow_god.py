@@ -190,10 +190,51 @@ async def handle_telegram_inbound(update: Update, context: ContextTypes.DEFAULT_
     
     await status_msg.delete()
 
-async def main():
-    if not TELEGRAM_TOKEN: return
+async def process_scraped_messages():
+    """Read unusual_messages.json and process any new ones."""
+    if not os.path.exists('unusual_messages.json'): return
     
-    # Start Telegram Listener in background
+    try:
+        with open('unusual_messages.json', 'r') as f:
+            scraped = json.load(f)
+    except: return
+
+    # Load processed state
+    processed = []
+    if os.path.exists(PROCESSED_FILE):
+        with open(PROCESSED_FILE, 'r') as f: processed = json.load(f)
+
+    for msg in scraped:
+        content = msg['content']
+        # Simple deduplication based on content (could be improved with hashes)
+        if content in processed: continue
+        
+        print(f"🐋 Processing Scraped Alert: {content[:50]}...")
+        data, ticker, stats, entry_price = await perform_full_analysis(content)
+        
+        if data:
+            final_msg = format_telegram_msg(ticker, data, stats, label="AUTOPILOT")
+            bot = Bot(token=TELEGRAM_TOKEN)
+            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=final_msg, parse_mode='HTML')
+            
+            processed.append(content)
+            # Keep log manageable (last 500)
+            if len(processed) > 500: processed.pop(0)
+
+    with open(PROCESSED_FILE, 'w') as f: json.dump(processed, f)
+
+async def main():
+    # If no TELEGRAM_TOKEN, the whole system breaks.
+    if not TELEGRAM_TOKEN:
+        print("❌ TELEGRAM_TOKEN is missing!")
+        return
+    
+    # Mode 1: Processing Scraped Messages (for GitHub Actions)
+    if os.path.exists('unusual_messages.json'):
+        await process_scraped_messages()
+        return
+
+    # Mode 2: Interactive Telegram Listener (for local run)
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_telegram_inbound))
     

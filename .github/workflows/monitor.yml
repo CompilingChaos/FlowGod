@@ -1,8 +1,9 @@
 name: FlowGod Monitor
 
 on:
-  # schedule:
-  #   - cron: '*/15 * * * *'
+  schedule:
+    # Run every 25 minutes, Monday-Friday, from 13:00 to 22:00 UTC (Market Hours)
+    - cron: '*/25 13-22 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -21,10 +22,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          npx playwright install chromium
+
+      - name: Scrape Discord
+        env:
+          # We will pass the session as a secret or committed file
+          # For now, we assume it's in the repo (careful with privacy!)
+          DISCORD_SESSION: ${{ secrets.DISCORD_SESSION_JSON }}
+        run: |
+          if [ -n "$DISCORD_SESSION" ]; then
+            echo "$DISCORD_SESSION" > discord_session.json
+          fi
+          python discord_scraper.py
 
       - name: Run FlowGod
         env:
-          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
