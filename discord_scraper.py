@@ -57,9 +57,16 @@ async def scrape_discord():
         message_items = soup.find_all('ol', class_=lambda x: x and 'messageListItem' in x)
         
         messages_to_process = []
-        for item in message_items:
+        # Reverse to get newest messages first if needed, but Discord usually lists them chronologically
+        for item in message_items[-10:]: # Look at the last 10 to pick 3
+            if len(messages_to_process) >= 3:
+                break
+
+            # Micro-jitter: simulate "reading" or "scrolling" delay
+            micro_delay = random.uniform(0.5, 2.5)
+            await asyncio.sleep(micro_delay)
+            
             # Look for the actual message text and embeds
-            # Discord's structure is deeply nested. We target the content container.
             msg_content = item.find('div', class_=lambda x: x and 'messageContent' in x)
             embeds = item.find_all('div', class_=lambda x: x and 'embedFull' in x)
             
@@ -68,7 +75,6 @@ async def scrape_discord():
                 text_data += msg_content.get_text() + "\n"
                 
             for embed in embeds:
-                # Extract title and description from embeds (Common in bots like Unusual Whales)
                 title = embed.find('div', class_=lambda x: x and 'embedTitle' in x)
                 desc = embed.find('div', class_=lambda x: x and 'embedDescription' in x)
                 if title: text_data += f"TITLE: {title.get_text()}\n"
@@ -80,7 +86,7 @@ async def scrape_discord():
                     "timestamp": datetime.now().isoformat()
                 })
 
-        print(f"✅ Scraped {len(messages_to_process)} message units.")
+        print(f"✅ Scraped {len(messages_to_process)} message units (limited to 3).")
         await browser.close()
         return messages_to_process
 
