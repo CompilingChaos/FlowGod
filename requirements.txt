@@ -1,0 +1,6 @@
+discord.py
+python-dotenv
+google-generativeai
+python-telegram-bot
+aiohttp
+googlesearch-python
