@@ -96,7 +96,7 @@ async def send_daily_trends():
         try:
             client = genai.Client(api_key=key)
             response = client.models.generate_content(
-                model='gemini-2.0-flash',
+                model='gemini-3-flash-preview',
                 contents=prompt
             )
             summary = response.text
@@ -169,10 +169,11 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data)
         try:
             client = genai.Client(api_key=key)
             response = client.models.generate_content(
-                model='gemini-2.0-flash',
+                model='gemini-3-flash-preview',
                 contents=prompt,
                 config=types.GenerateContentConfig(response_mime_type='application/json')
             )
+
             return json.loads(response.text)
         except Exception as e:
             print(f"Key failed: {e}. Retrying...")
