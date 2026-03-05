@@ -27,7 +27,7 @@ PROCESSED_FILE = 'processed_messages.json'
 tg_bot = Bot(token=TELEGRAM_TOKEN)
 
 async def analyze_with_ai_retry(trade_content, news_context, stats, current_price):
-    """Randomly selects keys and enforces strict JSON output."""
+    """Randomly selects keys and enforces strict JSON output with deeper critical analysis."""
     keys = list(GEMINI_API_KEYS)
     random.shuffle(keys)
     
@@ -39,15 +39,19 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, current_pric
     News Context: {news_context}
     Historical Performance: {stats}
 
+    Task:
+    Provide a CRITICAL and DEEP analysis. Do not be overly optimistic. Look for reasons why the whale might be wrong or if this is a hedge.
+    
     Return a JSON object with exactly these keys:
+    - is_insider: (boolean, true if news/flow strongly suggests non-public knowledge)
     - insider_conviction: (int 1-10)
-    - meaningfulness: (brief string, e.g. "High Relative Volume")
+    - meaningfulness: (string, why this trade matters)
     - direction: (LONG/SHORT)
     - leverage: (int)
     - timeframe_hours: (int)
     - target_price: (float)
     - stop_loss: (float)
-    - analysis: (VERY CONCISE summary, max 2 sentences, HTML format)
+    - analysis: (A deep, critical 4-5 sentence analysis in HTML format. Focus on risks, news alignment, and volume context.)
     """
 
     for key in keys:
@@ -107,9 +111,12 @@ async def process_message(message):
         log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], 
                   data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'])
 
-    # Build High-Quality Telegram Message
+    # Build Refined Telegram Message
+    insider_tag = "🚨 <b>INSIDER ALERT</b>" if data['is_insider'] else "📊 <b>STANDARD FLOW</b>"
+    
     final_msg = (
-        f"🚀 <b>FLOWGOD SIGNAL: {ticker}</b> 🚀\n"
+        f"🚀 <b>FLOWGOD SIGNAL: {ticker}</b>\n"
+        f"{insider_tag}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n"
         f"🐋 <b>Meaning:</b> {data['meaningfulness']}\n"
@@ -121,7 +128,7 @@ async def process_message(message):
         f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n"
         f"🛑 <b>Stop Loss:</b> <code>${data['stop_loss']}</code>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"💡 <b>AI Insight:</b>\n"
+        f"🧐 <b>CRITICAL ANALYSIS:</b>\n"
         f"<i>{data['analysis']}</i>\n\n"
         f"📈 <i>{stats}</i>"
     )
