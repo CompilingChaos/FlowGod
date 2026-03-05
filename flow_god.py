@@ -148,7 +148,6 @@ async def perform_full_analysis(trade_info, msg_time=None):
 
         # Handling ETFs differently (they use totalAssets instead of marketCap)
         mkt_cap = info.get('marketCap') or info.get('totalAssets', 0)
-        avg_vol = info.get('averageVolume', 1)
         
         # Technicals
         sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2) if not hist_full.empty else 0
