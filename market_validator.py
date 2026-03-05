@@ -40,10 +40,11 @@ async def validate_trades():
                 else:
                     raw_pnl = (entry_price - current_price) / entry_price
                 
-                leveraged_pnl = raw_pnl * leverage * 100
+                leveraged_pnl = float(raw_pnl * leverage * 100)
                 
-                # Track Peak Profit (simplified for now)
-                peak_pnl = max(trade['peak_pnl'], leveraged_pnl)
+                # Track Peak Profit
+                existing_peak = float(trade['peak_pnl'] or 0.0)
+                peak_pnl = max(existing_peak, leveraged_pnl)
                 
                 # Check if timeframe has expired
                 is_expired = (datetime.now() - entry_time) > timedelta(hours=timeframe_hours)
