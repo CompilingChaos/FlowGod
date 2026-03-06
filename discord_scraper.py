@@ -79,16 +79,16 @@ async def scrape_discord():
         message_items = soup.find_all(['li', 'div'], class_=lambda x: x and 'messageListItem' in x)
 
         messages_to_process = []
-        # Process the last 20 messages to ensure we don't miss anything due to scrolling/loading
-        # Deduplication now happens in the main engine via stable IDs
-        for item in reversed(message_items[-20:]):
+        # Look back deeper (last 40 items) to extract up to 30 valid messages
+        # This ensures we don't miss flow waves while maintaining a human profile
+        for item in reversed(message_items[-40:]):
             raw_text = item.get_text(separator=" ").strip()
             # Clean noise
             for n in ["(edited)", "NEW", "Reply", "Pins", "Threads"]: 
                 raw_text = raw_text.replace(n, "")
             
             content_text = raw_text.strip()
-            if len(content_text) < 30: continue # Ignore tiny system messages or fragments
+            if len(content_text) < 30: continue
                 
             print(f"✨ Potential message: {content_text[:40]}...")
             messages_to_process.append({
@@ -96,7 +96,10 @@ async def scrape_discord():
                 "timestamp": datetime.now().isoformat()
             })
             
-            if len(messages_to_process) >= 15: break
+            # Micro-jitter: simulate skimming
+            await asyncio.sleep(random.uniform(0.1, 0.4))
+            
+            if len(messages_to_process) >= 30: break
 
         print(f"✅ Scraped {len(messages_to_process)} raw message units.")
         
