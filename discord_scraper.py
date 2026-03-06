@@ -28,11 +28,6 @@ async def scrape_discord():
                 processed_hashes = [get_content_hash(m) if isinstance(m, str) else m for m in processed_data]
         except: pass
 
-    # 1. Random Initial Jitter
-    jitter_seconds = random.randint(60, 300)
-    print(f"⏳ Humanizing behavior: Sleeping for {jitter_seconds} seconds before scraping...")
-    await asyncio.sleep(jitter_seconds)
-
     if not os.path.exists(SESSION_FILE):
         print(f"❌ Error: {SESSION_FILE} not found.")
         return []
@@ -57,11 +52,11 @@ async def scrape_discord():
         await page.wait_for_load_state("domcontentloaded")
         await asyncio.sleep(random.uniform(3, 8))
         
-        # 3. Simulate mouse movement
-        for _ in range(random.randint(2, 5)):
-            x, y = random.randint(100, 500), random.randint(100, 500)
-            await page.mouse.move(x, y)
-            await asyncio.sleep(random.uniform(0.5, 1.5))
+        # 3. Simulate human-like mouse movement (wobbling)
+        for _ in range(random.randint(3, 7)):
+            x, y = random.randint(100, 800), random.randint(100, 800)
+            await page.mouse.move(x, y, steps=random.randint(5, 15))
+            await asyncio.sleep(random.uniform(0.3, 1.2))
 
         # Wait for the message container
         try:
@@ -72,16 +67,16 @@ async def scrape_discord():
             return []
 
         # 4. "Reading" delay before starting extraction
-        await asyncio.sleep(random.uniform(4, 10))
+        await asyncio.sleep(random.uniform(3, 6))
         
         content = await page.content()
         soup = BeautifulSoup(content, 'html.parser')
         message_items = soup.find_all(['li', 'div'], class_=lambda x: x and 'messageListItem' in x)
 
         messages_to_process = []
-        # Look back deeper (last 40 items) to extract up to 30 valid messages
-        # This ensures we don't miss flow waves while maintaining a human profile
-        for item in reversed(message_items[-40:]):
+        # Max 50 messages: This stays within the initial 'burst' Discord sends to the client
+        # Reading beyond 50 would require scrolling, triggering risky server requests.
+        for item in reversed(message_items[-60:]): # Look at 60 items to ensure we get 50 valid ones
             raw_text = item.get_text(separator=" ").strip()
             # Clean noise
             for n in ["(edited)", "NEW", "Reply", "Pins", "Threads"]: 
@@ -90,16 +85,15 @@ async def scrape_discord():
             content_text = raw_text.strip()
             if len(content_text) < 30: continue
                 
-            print(f"✨ Potential message: {content_text[:40]}...")
             messages_to_process.append({
                 "content": content_text,
                 "timestamp": datetime.now().isoformat()
             })
             
             # Micro-jitter: simulate skimming
-            await asyncio.sleep(random.uniform(0.1, 0.4))
+            await asyncio.sleep(random.uniform(0.05, 0.2))
             
-            if len(messages_to_process) >= 30: break
+            if len(messages_to_process) >= 50: break
 
         print(f"✅ Scraped {len(messages_to_process)} raw message units.")
         
