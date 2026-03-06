@@ -278,14 +278,25 @@ async def perform_full_analysis(trade_info, msg_time=None):
     
     return data, ticker, stats, entry_price, stable_id
 
+def clean_html(text):
+    """Sanitize HTML for Telegram: replace <br> with newlines and remove unsupported tags."""
+    if not text: return ""
+    # Replace <br>, <br/>, <br /> with \n
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.I)
+    # Ensure only Telegram-supported tags remain (basic b, i, code, u, s)
+    return text
+
 def format_telegram_msg(ticker, data, stats, label="SIGNAL"):
     insider_tag = "🚨 <b>INSIDER ALERT</b>" if data['is_insider'] else "📊 <b>STANDARD FLOW</b>"
     golden_tag = "🏆 <b>GOLDEN SWEEP DETECTED</b>\n" if data.get('is_golden_sweep') else ""
     iv_msg = "HIGH IV RISK" if data['iv_warning'] is True else data['iv_warning']
     iv_box = f"⚠️ <b>{iv_msg}</b>\n━━━━━━━━━━━━━━━━━\n" if data['iv_warning'] else ""
+    
+    clean_analysis = clean_html(data['analysis'])
+    
     return (f"<b>FLOWGOD: {ticker}</b>\n{insider_tag}\n{golden_tag}━━━━━━━━━━━━━━━━━\n{iv_box}"
             f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n📊 <b>Action:</b> <code>{data['direction']}</code>\n"
-            f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n🧐 <b>ANALYSIS:</b> <i>{data['analysis']}</i>")
+            f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n🧐 <b>ANALYSIS:</b> <i>{clean_analysis}</i>")
 
 async def process_scraped_messages():
     if not os.path.exists('unusual_messages.json'): return
