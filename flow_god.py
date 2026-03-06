@@ -298,6 +298,7 @@ async def perform_full_analysis(trade_info, msg_time=None):
     data['timeframe_hours'] = timeframe
     data['target_price'] = target
     data['stop_loss'] = stop
+    data['premium'] = premium_usd
     
     return data, ticker, stats, entry_price, stable_id
 
