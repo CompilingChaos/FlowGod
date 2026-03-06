@@ -1,9 +1,9 @@
 name: FlowGod Conviction Audit
 
 on:
-  # schedule:
-  #   # Run every Friday at 22:00 UTC (After market close)
-  #   - cron: '0 22 * * 5'
+  schedule:
+    # Run every Friday at 22:00 UTC (After market close)
+    - cron: '0 22 * * 5'
   workflow_dispatch:
 
 jobs:
