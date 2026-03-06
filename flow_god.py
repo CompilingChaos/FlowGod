@@ -325,9 +325,14 @@ def format_telegram_msg(ticker, data, stats, label="SIGNAL"):
     iv_box = f"⚠️ <b>{iv_msg}</b>\n━━━━━━━━━━━━━━━━━\n" if data['iv_warning'] else ""
     
     clean_analysis = clean_html(analysis_text)
-    
+    premium_str = f"${data.get('premium', 0):,.0f}" if isinstance(data.get('premium'), (int, float)) else str(data.get('premium'))
+    if data.get('premium') == 0 and 'premium_usd' in locals(): # Fallback if data dict doesn't have it yet
+        premium_str = f"${premium_usd:,.0f}"
+
     return (f"<b>FLOWGOD: {ticker}</b>\n{header_tag}\n{golden_tag}━━━━━━━━━━━━━━━━━\n{iv_box}"
-            f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n📊 <b>Action:</b> <code>{data['direction']}</code>\n"
+            f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n"
+            f"💰 <b>Premium:</b> <code>{premium_str}</code>\n"
+            f"📊 <b>Action:</b> <code>{data['direction']}</code>\n"
             f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n🧐 <b>ANALYSIS:</b> <i>{clean_analysis}</i>")
 
 async def process_scraped_messages():
