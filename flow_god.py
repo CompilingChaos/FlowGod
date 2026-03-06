@@ -261,6 +261,22 @@ async def perform_full_analysis(trade_info, msg_time=None):
     
     if not data: return None, ticker, stats, entry_price, stable_id
 
+    # --- ROBUST NUMERIC PARSING ---
+    # Ensure AI-returned strings are converted to numbers before DB logging
+    def safe_num(val, default=0):
+        try:
+            if isinstance(val, (int, float)): return val
+            # Remove non-numeric artifacts like 'x' or ' (OTM)'
+            clean_val = re.sub(r'[^\d\.]', '', str(val))
+            return float(clean_val) if clean_val else default
+        except: return default
+
+    leverage = safe_num(data.get('leverage'), 5)
+    timeframe = safe_num(data.get('timeframe_hours'), 24)
+    target = safe_num(data.get('target_price'), 0)
+    stop = safe_num(data.get('stop_loss'), 0)
+    conviction = int(safe_num(data.get('insider_conviction'), 7))
+
     # 3. Strategic Calibration
     if side == "Bid" and option_type == "Puts":
         data['direction'] = "LONG"
@@ -270,11 +286,18 @@ async def perform_full_analysis(trade_info, msg_time=None):
         data['analysis'] = "<b>[BID SIDE CALLS]</b> Bearish premium selling. " + data['analysis']
     
     if ask_pct >= 70 and multi_pct == 0:
-        data['insider_conviction'] = min(10, data['insider_conviction'] + 2)
+        conviction = min(10, conviction + 2)
         data['analysis'] = "🔥 <b>HIGH URGENCY:</b> Naked ask-side aggression. " + data['analysis']
 
     if entry_price > 0:
-        log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'], iv_rank, premium_usd, option_entry)
+        log_trade(ticker, data['direction'], leverage, timeframe, conviction, entry_price, target, stop, iv_rank, premium_usd, option_entry)
+    
+    # Update data dict for format_telegram_msg consistency
+    data['insider_conviction'] = conviction
+    data['leverage'] = leverage
+    data['timeframe_hours'] = timeframe
+    data['target_price'] = target
+    data['stop_loss'] = stop
     
     return data, ticker, stats, entry_price, stable_id
 
