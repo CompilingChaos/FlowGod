@@ -44,6 +44,21 @@ def init_db():
                 side TEXT DEFAULT 'Unknown'
             )
         ''')
+        
+        # --- AUTO-MIGRATION LOGIC ---
+        # Add columns if they don't exist (handles existing DBs in GitHub Actions)
+        cursor.execute("PRAGMA table_info(trades)")
+        columns = [column[1] for row in cursor.fetchall()]
+        if 'option_entry_price' not in columns:
+            print("🔧 Migrating DB: Adding option_entry_price to trades table")
+            cursor.execute("ALTER TABLE trades ADD COLUMN option_entry_price REAL DEFAULT 0.0")
+            
+        cursor.execute("PRAGMA table_info(long_term_flow)")
+        columns = [column[1] for row in cursor.fetchall()]
+        if 'side' not in columns:
+            print("🔧 Migrating DB: Adding side to long_term_flow table")
+            cursor.execute("ALTER TABLE long_term_flow ADD COLUMN side TEXT DEFAULT 'Unknown'")
+        
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS daily_reports (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
