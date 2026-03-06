@@ -287,14 +287,23 @@ def clean_html(text):
     return text
 
 def format_telegram_msg(ticker, data, stats, label="SIGNAL"):
-    insider_tag = "🚨 <b>INSIDER ALERT</b>" if data['is_insider'] else "📊 <b>STANDARD FLOW</b>"
+    # 1. Determine the 'Vibe' of the trade
+    is_insider = data['is_insider']
+    analysis_text = data['analysis']
+    
+    header_tag = "🚨 <b>INSIDER ALERT</b>" if is_insider else "📊 <b>STANDARD FLOW</b>"
+    
+    # 2. Add 'Longterm Idea' branding for Floor Support trades
+    if "[BID SIDE PUTS]" in analysis_text or "[BID SIDE CALLS]" in analysis_text:
+        header_tag = "🛡️ <b>LONG-TERM IDEA / FLOOR SUPPORT</b>"
+    
     golden_tag = "🏆 <b>GOLDEN SWEEP DETECTED</b>\n" if data.get('is_golden_sweep') else ""
     iv_msg = "HIGH IV RISK" if data['iv_warning'] is True else data['iv_warning']
     iv_box = f"⚠️ <b>{iv_msg}</b>\n━━━━━━━━━━━━━━━━━\n" if data['iv_warning'] else ""
     
-    clean_analysis = clean_html(data['analysis'])
+    clean_analysis = clean_html(analysis_text)
     
-    return (f"<b>FLOWGOD: {ticker}</b>\n{insider_tag}\n{golden_tag}━━━━━━━━━━━━━━━━━\n{iv_box}"
+    return (f"<b>FLOWGOD: {ticker}</b>\n{header_tag}\n{golden_tag}━━━━━━━━━━━━━━━━━\n{iv_box}"
             f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n📊 <b>Action:</b> <code>{data['direction']}</code>\n"
             f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n🧐 <b>ANALYSIS:</b> <i>{clean_analysis}</i>")
 
