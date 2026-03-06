@@ -58,7 +58,8 @@ async def run_comprehensive_test():
             bot = Bot(token=tg_token)
             insider_tag = "🚨 <b>INSIDER ALERT</b>" if data['is_insider'] else "📊 <b>STANDARD FLOW</b>"
             golden_tag = "🏆 <b>GOLDEN SWEEP DETECTED</b>\n" if data.get('is_golden_sweep') else ""
-            iv_box = f"⚠️ <b>{data['iv_warning']}</b>\n━━━━━━━━━━━━━━━━━\n" if data['iv_warning'] else ""
+            iv_msg = "HIGH IV RISK" if data['iv_warning'] is True else data['iv_warning']
+            iv_box = f"⚠️ <b>{iv_msg}</b>\n━━━━━━━━━━━━━━━━━\n" if data['iv_warning'] else ""
             
             final_msg = (
                 f"🧪 <b>TEST: {fake_ticker} (INSTITUTIONAL UI)</b>\n"
