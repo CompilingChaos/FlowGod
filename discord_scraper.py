@@ -79,34 +79,26 @@ async def scrape_discord():
         message_items = soup.find_all(['li', 'div'], class_=lambda x: x and 'messageListItem' in x)
 
         messages_to_process = []
-        # Process from NEWEST to OLDEST
-        for item in reversed(message_items[-12:]):
+        # Process the last 20 messages to ensure we don't miss anything due to scrolling/loading
+        # Deduplication now happens in the main engine via stable IDs
+        for item in reversed(message_items[-20:]):
             raw_text = item.get_text(separator=" ").strip()
             # Clean noise
             for n in ["(edited)", "NEW", "Reply", "Pins", "Threads"]: 
                 raw_text = raw_text.replace(n, "")
             
             content_text = raw_text.strip()
-            if len(content_text) < 15: continue
-            
-            msg_hash = get_content_hash(content_text)
-            
-            if msg_hash in processed_hashes:
-                print("📍 Reached 'Last Seen' message. Stopping extraction.")
-                break
+            if len(content_text) < 30: continue # Ignore tiny system messages or fragments
                 
-            print(f"✨ New message detected: {content_text[:40]}...")
+            print(f"✨ Potential message: {content_text[:40]}...")
             messages_to_process.append({
                 "content": content_text,
                 "timestamp": datetime.now().isoformat()
             })
             
-            # 5. Humanized Extraction Jitter (Simulate scrolling/reading)
-            await asyncio.sleep(random.uniform(2.0, 5.0))
-            
-            if len(messages_to_process) >= 8: break
+            if len(messages_to_process) >= 15: break
 
-        print(f"✅ Scraped {len(messages_to_process)} NEW message units.")
+        print(f"✅ Scraped {len(messages_to_process)} raw message units.")
         
         # 6. Linger Exit
         linger_time = random.randint(10, 25)
