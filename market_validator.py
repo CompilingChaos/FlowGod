@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timedelta
 from telegram import Bot
 import os
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,13 +26,23 @@ async def validate_trades():
         for trade in open_trades:
             ticker = trade['ticker']
             try:
+                # Helper for safe numeric conversion from DB
+                def safe_float(val, default=0.0):
+                    try:
+                        if val is None: return default
+                        if isinstance(val, (int, float)): return float(val)
+                        # Remove non-numeric artifacts
+                        clean = re.sub(r'[^\d\.]', '', str(val))
+                        return float(clean) if clean else default
+                    except: return default
+
                 # Robustly cast values from DB
-                entry_price = float(trade['entry_price'])
-                option_entry = float(trade['option_entry_price'] or 0.0)
-                leverage = float(trade['leverage'] or 1)
+                entry_price = safe_float(trade['entry_price'])
+                option_entry = safe_float(trade['option_entry_price'])
+                leverage = safe_float(trade['leverage'], 5.0)
                 direction = str(trade['direction']).upper()
                 entry_time = datetime.fromisoformat(trade['entry_time'])
-                timeframe_hours = float(trade['timeframe_hours'] or 24)
+                timeframe_hours = safe_float(trade['timeframe_hours'], 24.0)
                 
                 tk = yf.Ticker(ticker)
                 hist = tk.history(period="1d")
@@ -42,24 +53,17 @@ async def validate_trades():
                 current_price = float(hist['Close'].iloc[-1])
                 
                 # Calculate P/L
-                # Priority: If we have option_entry, we calculate option move (simplified proxy)
-                # Since we don't have real-time option chains easily, we use stock move as proxy 
-                # but if we had option_entry, we can at least show it in the logs.
                 if "LONG" in direction or "CALL" in direction:
                     raw_pnl = (current_price - entry_price) / entry_price
                 else:
                     raw_pnl = (entry_price - current_price) / entry_price
                 
-                # If we have an option entry price, we can apply a 10x multiplier to the raw stock move 
-                # to simulate option delta/leverage more realistically than just 'leverage' field.
-                actual_leverage = leverage if option_entry == 0 else (leverage * 1.5) # Slight boost for real option bets
+                actual_leverage = leverage if option_entry == 0 else (leverage * 1.5)
                 leveraged_pnl = float(raw_pnl * actual_leverage * 100)
                 
-                # Track Peak Profit
                 existing_peak = float(trade['peak_pnl'] or 0.0)
                 peak_pnl = max(existing_peak, leveraged_pnl)
                 
-                # Check if timeframe has expired
                 is_expired = (datetime.now() - entry_time) > timedelta(hours=timeframe_hours)
                 
                 if is_expired:
@@ -126,6 +130,5 @@ if __name__ == "__main__":
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(validate_trades())
-    # Only send leaderboard on weekends or once a day
     if datetime.now().hour >= 21:
         loop.run_until_complete(send_performance_leaderboard())
