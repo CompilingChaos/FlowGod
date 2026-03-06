@@ -164,35 +164,32 @@ def fetch_news(ticker, query_type="general"):
         return "\n".join(results)
     except: return "No recent data found."
 
-def get_stable_id(ticker, strike, expiry, premium, side, reported_time):
-    """Create a unique hash for a trade that won't change even if the 'time ago' text does."""
-    unique_str = f"{ticker}_{strike}_{expiry}_{premium}_{side}_{reported_time}"
+def get_stable_id(ticker, strike, expiry, side, reported_time):
+    """Create a unique hash for a trade. Premium is excluded to group Interval/Hot alerts."""
+    unique_str = f"{ticker}_{strike}_{expiry}_{side}_{reported_time}"
     return hashlib.sha256(unique_str.encode()).hexdigest()
 
-def normalize_reported_time(text):
-    """Convert 'gestern um 21:40' or 'heute um 14:00' to a stable ISO date string."""
-    now = datetime.now()
-    time_match = re.search(r'(\d{1,2}):(\d{2})', text)
-    if not time_match: return now.strftime('%Y-%m-%d')
-    
-    hour, minute = map(int, time_match.groups())
-    target_date = now
-    if "gestern" in text.lower():
-        target_date = now - timedelta(days=1)
-    
-    return target_date.replace(hour=hour, minute=minute, second=0, microsecond=0).isoformat()
+def get_mkt_cap_threshold(mkt_cap):
+    """Sliding scale for premium floor based on ticker size."""
+    # Convert to Billions for easy comparison
+    cap_b = mkt_cap / 1e9
+    if cap_b < 10: return 100000      # Small Cap: $100k
+    if cap_b < 50: return 300000      # Mid Cap: $300k
+    if cap_b < 200: return 500000     # Large Cap: $500k
+    return 2000000                    # Mega Cap (NVDA, MSFT, etc): $2M
 
 async def perform_full_analysis(trade_info, msg_time=None):
     """Core analysis logic reusable for Discord or Telegram."""
     clean_info = str(trade_info).replace("🔥", "").replace("🚨", "").strip()
     
-    # 1. Flexible Multi-line Extraction (re.DOTALL)
+    # 1. Flexible Multi-line Extraction
     ts_match = re.search(r'([A-Z]{1,5})\s+([\d\.]+)\s+([CP])\s+([\d\/]{8,10})', clean_info, re.DOTALL)
     side_match = re.search(r'(Ask|Bid|Mid)\s+Side', clean_info, re.I)
     ba_match = re.search(r'Bid/Ask %:\s*(\d+)/(\d+)', clean_info)
     multi_match = re.search(r'Multi-leg Volume:\s*(\d+)%', clean_info)
     prem_match = re.search(r'Prem(?:ium)?:\s*\$([\d\.,]+[KMB]?)', clean_info, re.I)
     fill_match = re.search(r'Average Fill:\s*\$([\d\.]+)', clean_info, re.I)
+    vol_oi_match = re.search(r'Vol/OI:\s*([\d\.]+)', clean_info, re.I)
     time_str = normalize_reported_time(clean_info)
 
     side = side_match.group(1).capitalize() if side_match else "Unknown"
@@ -200,12 +197,12 @@ async def perform_full_analysis(trade_info, msg_time=None):
     multi_pct = int(multi_match.group(1)) if multi_match else 0
     premium_usd = parse_premium(prem_match.group(1) if prem_match else "0")
     option_entry = float(fill_match.group(1)) if fill_match else 0.0
+    vol_oi = float(vol_oi_match.group(1)) if vol_oi_match else 0.0
 
     if ts_match:
         ticker = ts_match.group(1).upper()
         strike_val = ts_match.group(2); option_type = "Calls" if ts_match.group(3).upper() == "C" else "Puts"; expiry_val = ts_match.group(4)
     else:
-        # Fallback for complex multiline formatting
         ticker_match = re.search(r'^([A-Z]{1,5})\b', clean_info)
         ticker = ticker_match.group(1).upper() if ticker_match else "SPY"
         strike_match = re.search(r'\b([\d\.]+)\s+([CP])\b', clean_info)
@@ -214,26 +211,30 @@ async def perform_full_analysis(trade_info, msg_time=None):
         expiry_match = re.search(r'(\d{2}/\d{2}/\d{4})', clean_info)
         expiry_val = expiry_match.group(1) if expiry_match else "N/A"
 
-    # Generate STABLE ID for deduplication
-    stable_id = get_stable_id(ticker, strike_val, expiry_val, premium_usd, side, time_str)
-
-    if premium_usd < 100000: return None, ticker, None, 0, stable_id
-
-    if is_long_term(expiry_val):
-        v_match = re.search(r'Vol/OI:\s*([\d\.]+)', trade_info, re.I); o_match = re.search(r'OTM:\s*([-\d\.\%]+)', trade_info, re.I)
-        log_long_term_flow(ticker, option_type, strike_val, expiry_val, premium_usd, float(v_match.group(1)) if v_match else 0, float(o_match.group(1).replace('%','')) if o_match else 0, side)
-        return "STORED", ticker, None, 0, stable_id
+    stable_id = get_stable_id(ticker, strike_val, expiry_val, side, time_str)
 
     iv_rank = calculate_iv_rank(ticker)
     try:
         tk = yf.Ticker(ticker); hist_full = tk.history(period="1y"); entry_price = round(hist_full['Close'].iloc[-1], 2); mkt_cap = (tk.info.get('marketCap') or tk.info.get('totalAssets', 0)) if tk.info else 0
         sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2); rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2); macro = await get_macro_context()
+        
+        # 2. Market Cap Relative Filtering
+        threshold = get_mkt_cap_threshold(mkt_cap)
+        if premium_usd < threshold:
+            return "FILTERED_BY_CAP", ticker, None, 0, stable_id
+
+        golden_sweep_context = f"UNUSUALLY HIGH VOL/OI ({vol_oi}x)" if vol_oi > 2.0 else "Standard liquidity"
         market_data = (f"Ticker: {ticker} @ ${entry_price} | Size: {mkt_cap/1e9:.1f}B | IV Rank: {iv_rank}%\n"
                       f"Option: {strike_val} {option_type} Exp {expiry_val} | Side: {side} (Aggression: {ask_pct}% Ask)\n"
-                      f"Context: {multi_pct}% Multi-leg (0% = Naked directional bet)\n"
+                      f"Context: {multi_pct}% Multi-leg | Vol/OI: {vol_oi} ({golden_sweep_context})\n"
                       f"Metrics: RSI={rsi}, 50SMA=${sma50} | Macro: {macro}")
     except:
+        if premium_usd < 100000: return None, ticker, None, 0, stable_id
         entry_price, market_data = 0, "Data fetch failed."
+
+    if is_long_term(expiry_val):
+        log_long_term_flow(ticker, option_type, strike_val, expiry_val, premium_usd, vol_oi, 0, side)
+        return "STORED", ticker, None, 0, stable_id
 
     news = fetch_news(ticker); sec = fetch_news(ticker, query_type="sec"); stats = get_performance_stats()
     d_stats = get_ticker_daily_stats(ticker)
@@ -242,19 +243,17 @@ async def perform_full_analysis(trade_info, msg_time=None):
     
     if not data: return None, ticker, stats, entry_price, stable_id
 
-    # 2. Strategic Conviction & Direction Calibration
-    # If it's a PUT on the BID side, it's actually Bullish (Selling Puts)
+    # 3. Strategic Calibration
     if side == "Bid" and option_type == "Puts":
         data['direction'] = "LONG"
-        data['analysis'] = "<b>[BID SIDE PUTS]</b> Trader is likely selling premium/bullish. " + data['analysis']
+        data['analysis'] = "<b>[BID SIDE PUTS]</b> Bullish premium selling. " + data['analysis']
     elif side == "Bid" and option_type == "Calls":
         data['direction'] = "SHORT"
-        data['analysis'] = "<b>[BID SIDE CALLS]</b> Trader is likely selling premium/bearish. " + data['analysis']
+        data['analysis'] = "<b>[BID SIDE CALLS]</b> Bearish premium selling. " + data['analysis']
     
-    # Aggressiveness Boost: slamming the ask with naked flow
     if ask_pct >= 70 and multi_pct == 0:
         data['insider_conviction'] = min(10, data['insider_conviction'] + 2)
-        data['analysis'] = "🔥 <b>HIGH URGENCY:</b> Naked ask-side aggression detected. " + data['analysis']
+        data['analysis'] = "🔥 <b>HIGH URGENCY:</b> Naked ask-side aggression. " + data['analysis']
 
     if entry_price > 0:
         log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'], iv_rank, premium_usd, option_entry)
@@ -273,24 +272,56 @@ def format_telegram_msg(ticker, data, stats, label="SIGNAL"):
 async def process_scraped_messages():
     if not os.path.exists('unusual_messages.json'): return
     with open('unusual_messages.json', 'r') as f: scraped = json.load(f)
+    
+    # 4. Parent-Child Deduplication
+    # We group by stable_id (Ticker+Strike+Expiry+Side+Time)
+    unique_signals = {}
+    for msg in scraped:
+        content = msg['content']
+        # Preliminary pass to extract ID and Premium
+        prem_match = re.search(r'Prem(?:ium)?:\s*\$([\d\.,]+[KMB]?)', content, re.I)
+        premium = parse_premium(prem_match.group(1) if prem_match else "0")
+        
+        # Determine if it's a "Hot" version (higher priority)
+        is_hot = "🔥" in content or "Hot Contract" in content
+        
+        # Temporary parsing for grouping
+        ts_match = re.search(r'([A-Z]{1,5})\s+([\d\.]+)\s+([CP])\s+([\d\/]{8,10})', content, re.DOTALL)
+        side_match = re.search(r'(Ask|Bid|Mid)\s+Side', content, re.I)
+        if not ts_match: continue
+        
+        ticker = ts_match.group(1).upper()
+        strike = ts_match.group(2)
+        expiry = ts_match.group(4)
+        side = side_match.group(1).capitalize() if side_match else "Unknown"
+        time_id = normalize_reported_time(content)
+        
+        sid = get_stable_id(ticker, strike, expiry, side, time_id)
+        
+        # Store the best version (Hot Contract or highest premium)
+        if sid not in unique_signals:
+            unique_signals[sid] = {"content": content, "premium": premium, "is_hot": is_hot}
+        else:
+            # Overwrite if current is Hot and existing isn't, OR if premium is significantly higher
+            if (is_hot and not unique_signals[sid]['is_hot']) or (premium > unique_signals[sid]['premium'] * 1.1):
+                unique_signals[sid] = {"content": content, "premium": premium, "is_hot": is_hot}
+
     processed = []
     if os.path.exists(PROCESSED_FILE):
         with open(PROCESSED_FILE, 'r') as f: processed = json.load(f)
     
-    for msg in scraped:
-        content = msg['content']
-        # We perform analysis first to get the stable_id
-        data, ticker, stats, entry_price, stable_id = await perform_full_analysis(content)
-        
-        if stable_id in processed: 
-            print(f"⏭️ Skipping duplicate trade: {ticker} ({stable_id})")
+    for sid, signal in unique_signals.items():
+        if sid in processed:
+            print(f"⏭️ Skipping duplicate: {sid[:10]}")
             continue
             
-        if data and data != "STORED" and data['insider_conviction'] >= 6:
+        data, ticker, stats, entry_price, stable_id = await perform_full_analysis(signal['content'])
+        
+        if data and data not in ["STORED", "FILTERED_BY_CAP"] and data['insider_conviction'] >= 6:
             bot = Bot(token=TELEGRAM_TOKEN)
             await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=format_telegram_msg(ticker, data, stats), parse_mode='HTML')
         
-        processed.append(stable_id)
+        processed.append(sid)
         if len(processed) > 500: processed.pop(0)
         
     with open(PROCESSED_FILE, 'w') as f: json.dump(processed, f)
