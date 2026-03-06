@@ -2,8 +2,8 @@ name: FlowGod Monitor
 
 on:
   schedule:
-    # Run every 25 minutes, Monday-Friday, from 13:00 to 22:00 UTC (Market Hours)
-    - cron: '*/25 13-22 * * 1-5'
+    # Run every 25 minutes, Monday-Friday, from 14:00 to 21:00 UTC (9:00 AM - 4:00 PM EST)
+    - cron: '*/25 14-21 * * 1-5'
   workflow_dispatch:
 
 jobs:
