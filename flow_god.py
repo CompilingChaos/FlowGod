@@ -158,7 +158,7 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data,
     {news_context}
     HISTORICAL PERFORMANCE:
     {stats}
-    Return a JSON object with: is_insider, insider_conviction (1-10), is_golden_sweep, iv_warning, insider_logic (HTML), meaningfulness, direction (LONG/SHORT), leverage, timeframe_hours, target_price, stop_loss, analysis (HTML).
+    Return a JSON object with: is_insider, insider_conviction (1-10), is_golden_sweep, iv_warning, insider_logic (HTML), meaningfulness, direction (LONG/SHORT), leverage, timeframe_hours, timeframe_text (human-readable), target_price, stop_loss, analysis (HTML).
     """
     for key in keys:
         try:
@@ -273,6 +273,7 @@ async def perform_full_analysis(trade_info, msg_time=None):
 
     leverage = safe_num(data.get('leverage'), 5)
     timeframe = safe_num(data.get('timeframe_hours'), 24)
+    timeframe_txt = data.get('timeframe_text', 'N/A')
     target = safe_num(data.get('target_price'), 0)
     stop = safe_num(data.get('stop_loss'), 0)
     conviction = int(safe_num(data.get('insider_conviction'), 7))
@@ -296,6 +297,7 @@ async def perform_full_analysis(trade_info, msg_time=None):
     data['insider_conviction'] = conviction
     data['leverage'] = leverage
     data['timeframe_hours'] = timeframe
+    data['timeframe_text'] = data.get('timeframe_text', 'N/A')
     data['target_price'] = target
     data['stop_loss'] = stop
     data['premium'] = premium_usd
