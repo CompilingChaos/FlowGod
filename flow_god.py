@@ -186,28 +186,33 @@ async def perform_full_analysis(trade_info, msg_time=None):
     """Core analysis logic reusable for Discord or Telegram."""
     clean_info = str(trade_info).replace("🔥", "").replace("🚨", "").strip()
     
-    # 1. Advanced Extraction
-    ts_match = re.search(r'([A-Z]{1,5})\s+([\d\.]+)\s+([CP])\s+([\d\/]{8,10})', clean_info)
+    # 1. Flexible Multi-line Extraction (re.DOTALL)
+    ts_match = re.search(r'([A-Z]{1,5})\s+([\d\.]+)\s+([CP])\s+([\d\/]{8,10})', clean_info, re.DOTALL)
     side_match = re.search(r'(Ask|Bid|Mid)\s+Side', clean_info, re.I)
     ba_match = re.search(r'Bid/Ask %:\s*(\d+)/(\d+)', clean_info)
     multi_match = re.search(r'Multi-leg Volume:\s*(\d+)%', clean_info)
     prem_match = re.search(r'Prem(?:ium)?:\s*\$([\d\.,]+[KMB]?)', clean_info, re.I)
+    fill_match = re.search(r'Average Fill:\s*\$([\d\.]+)', clean_info, re.I)
     time_str = normalize_reported_time(clean_info)
 
-    side = side_match.group(1) if side_match else "Unknown"
+    side = side_match.group(1).capitalize() if side_match else "Unknown"
     ask_pct = int(ba_match.group(2)) if ba_match else 50
     multi_pct = int(multi_match.group(1)) if multi_match else 0
     premium_usd = parse_premium(prem_match.group(1) if prem_match else "0")
+    option_entry = float(fill_match.group(1)) if fill_match else 0.0
 
     if ts_match:
         ticker = ts_match.group(1).upper()
         strike_val = ts_match.group(2); option_type = "Calls" if ts_match.group(3).upper() == "C" else "Puts"; expiry_val = ts_match.group(4)
     else:
-        # Fallback for tickers without full option details
-        match = re.search(r'\$([A-Z]{1,5})', clean_info)
-        if not match: match = re.search(r'\b([A-Z]{1,5})\b', clean_info)
-        ticker = match.group(1).upper() if match else "SPY"
-        strike_val, expiry_val, option_type = "N/A", "N/A", "Options"
+        # Fallback for complex multiline formatting
+        ticker_match = re.search(r'^([A-Z]{1,5})\b', clean_info)
+        ticker = ticker_match.group(1).upper() if ticker_match else "SPY"
+        strike_match = re.search(r'\b([\d\.]+)\s+([CP])\b', clean_info)
+        strike_val = strike_match.group(1) if strike_match else "N/A"
+        option_type = "Calls" if (strike_match and strike_match.group(2) == "C") else "Options"
+        expiry_match = re.search(r'(\d{2}/\d{2}/\d{4})', clean_info)
+        expiry_val = expiry_match.group(1) if expiry_match else "N/A"
 
     # Generate STABLE ID for deduplication
     stable_id = get_stable_id(ticker, strike_val, expiry_val, premium_usd, side, time_str)
@@ -224,8 +229,8 @@ async def perform_full_analysis(trade_info, msg_time=None):
         tk = yf.Ticker(ticker); hist_full = tk.history(period="1y"); entry_price = round(hist_full['Close'].iloc[-1], 2); mkt_cap = (tk.info.get('marketCap') or tk.info.get('totalAssets', 0)) if tk.info else 0
         sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2); rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2); macro = await get_macro_context()
         market_data = (f"Ticker: {ticker} @ ${entry_price} | Size: {mkt_cap/1e9:.1f}B | IV Rank: {iv_rank}%\n"
-                      f"Option: {strike_val} {option_type} Exp {expiry_val} | Side: {side} (Ask %: {ask_pct}%)\n"
-                      f"Aggressiveness: {ask_pct}% Ask Side | Multi-leg: {multi_pct}%\n"
+                      f"Option: {strike_val} {option_type} Exp {expiry_val} | Side: {side} (Aggression: {ask_pct}% Ask)\n"
+                      f"Context: {multi_pct}% Multi-leg (0% = Naked directional bet)\n"
                       f"Metrics: RSI={rsi}, 50SMA=${sma50} | Macro: {macro}")
     except:
         entry_price, market_data = 0, "Data fetch failed."
@@ -236,8 +241,23 @@ async def perform_full_analysis(trade_info, msg_time=None):
     data = await analyze_with_ai_retry(trade_info, news + "\n" + sec, stats, market_data, daily_context)
     
     if not data: return None, ticker, stats, entry_price, stable_id
+
+    # 2. Strategic Conviction & Direction Calibration
+    # If it's a PUT on the BID side, it's actually Bullish (Selling Puts)
+    if side == "Bid" and option_type == "Puts":
+        data['direction'] = "LONG"
+        data['analysis'] = "<b>[BID SIDE PUTS]</b> Trader is likely selling premium/bullish. " + data['analysis']
+    elif side == "Bid" and option_type == "Calls":
+        data['direction'] = "SHORT"
+        data['analysis'] = "<b>[BID SIDE CALLS]</b> Trader is likely selling premium/bearish. " + data['analysis']
+    
+    # Aggressiveness Boost: slamming the ask with naked flow
+    if ask_pct >= 70 and multi_pct == 0:
+        data['insider_conviction'] = min(10, data['insider_conviction'] + 2)
+        data['analysis'] = "🔥 <b>HIGH URGENCY:</b> Naked ask-side aggression detected. " + data['analysis']
+
     if entry_price > 0:
-        log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'], iv_rank, premium_usd)
+        log_trade(ticker, data['direction'], data['leverage'], data['timeframe_hours'], data['insider_conviction'], entry_price, data['target_price'], data['stop_loss'], iv_rank, premium_usd, option_entry)
     
     return data, ticker, stats, entry_price, stable_id
 

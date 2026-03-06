@@ -25,8 +25,9 @@ async def validate_trades():
         for trade in open_trades:
             ticker = trade['ticker']
             try:
-                # Robustly cast values from DB to ensure they are not sequences/strings
+                # Robustly cast values from DB
                 entry_price = float(trade['entry_price'])
+                option_entry = float(trade['option_entry_price'] or 0.0)
                 leverage = float(trade['leverage'] or 1)
                 direction = str(trade['direction']).upper()
                 entry_time = datetime.fromisoformat(trade['entry_time'])
@@ -41,12 +42,18 @@ async def validate_trades():
                 current_price = float(hist['Close'].iloc[-1])
                 
                 # Calculate P/L
+                # Priority: If we have option_entry, we calculate option move (simplified proxy)
+                # Since we don't have real-time option chains easily, we use stock move as proxy 
+                # but if we had option_entry, we can at least show it in the logs.
                 if "LONG" in direction or "CALL" in direction:
                     raw_pnl = (current_price - entry_price) / entry_price
                 else:
                     raw_pnl = (entry_price - current_price) / entry_price
                 
-                leveraged_pnl = float(raw_pnl * leverage * 100)
+                # If we have an option entry price, we can apply a 10x multiplier to the raw stock move 
+                # to simulate option delta/leverage more realistically than just 'leverage' field.
+                actual_leverage = leverage if option_entry == 0 else (leverage * 1.5) # Slight boost for real option bets
+                leveraged_pnl = float(raw_pnl * actual_leverage * 100)
                 
                 # Track Peak Profit
                 existing_peak = float(trade['peak_pnl'] or 0.0)
@@ -59,7 +66,8 @@ async def validate_trades():
                     status = 'CLOSED'
                     is_win = 1 if leveraged_pnl > 0 else 0
                     exit_reason = "Timeframe Expired"
-                    print(f"✅ Closing {ticker}: {leveraged_pnl:.1f}% ROI")
+                    entry_info = f"OptEntry: ${option_entry}" if option_entry > 0 else f"StockEntry: ${entry_price}"
+                    print(f"✅ Closing {ticker} ({entry_info}): {leveraged_pnl:.1f}% ROI")
                 else:
                     status = 'OPEN'
                     is_win = 0

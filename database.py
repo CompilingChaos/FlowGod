@@ -25,7 +25,8 @@ def init_db():
                 exit_reason TEXT,
                 iv_rank REAL,
                 peak_pnl REAL DEFAULT 0.0,
-                premium REAL DEFAULT 0.0
+                premium REAL DEFAULT 0.0,
+                option_entry_price REAL DEFAULT 0.0
             )
         ''')
         cursor.execute('''
@@ -39,7 +40,8 @@ def init_db():
                 premium REAL,
                 vol_oi REAL,
                 otm REAL,
-                bid_ask TEXT
+                bid_ask TEXT,
+                side TEXT DEFAULT 'Unknown'
             )
         ''')
         cursor.execute('''
@@ -73,13 +75,13 @@ def clear_daily_flow():
         # 2. We keep the trades for historical P/L, but they won't match tomorrow's "today" query
         conn.commit()
 
-def log_long_term_flow(ticker, direction, strike, expiry, premium, vol_oi, otm, bid_ask):
+def log_long_term_flow(ticker, direction, strike, expiry, premium, vol_oi, otm, side):
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO long_term_flow (ticker, entry_time, direction, strike, expiry, premium, vol_oi, otm, bid_ask)
+            INSERT INTO long_term_flow (ticker, entry_time, direction, strike, expiry, premium, vol_oi, otm, side)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (ticker, datetime.now().isoformat(), direction, strike, expiry, premium, vol_oi, otm, bid_ask))
+        ''', (ticker, datetime.now().isoformat(), direction, strike, expiry, premium, vol_oi, otm, side))
         conn.commit()
 
 def get_daily_trends():
@@ -96,15 +98,15 @@ def get_daily_trends():
         ''', (f'{today}%',))
         return cursor.fetchall()
 
-def log_trade(ticker, direction, leverage, timeframe_hours, conviction, entry_price, target, stop, iv_rank=0, premium=0):
+def log_trade(ticker, direction, leverage, timeframe_hours, conviction, entry_price, target, stop, iv_rank=0, premium=0, option_entry=0):
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO trades (ticker, entry_time, direction, leverage, timeframe_hours, 
-                              conviction_score, entry_price, target_price, stop_loss, iv_rank, premium)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              conviction_score, entry_price, target_price, stop_loss, iv_rank, premium, option_entry_price)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (ticker, datetime.now().isoformat(), direction.upper(), leverage, timeframe_hours, 
-              conviction, entry_price, target, stop, iv_rank, premium))
+              conviction, entry_price, target, stop, iv_rank, premium, option_entry))
         conn.commit()
 
 def get_ticker_daily_stats(ticker):
@@ -146,7 +148,7 @@ def get_performance_stats():
         total, wins = (row[0], row[1]) if row else (0, 0)
         
         cursor.execute('SELECT AVG(is_win) FROM trades WHERE conviction_score >= 8 AND status = "CLOSED"')
-        res = cursor.fetchone()
+        res = sqlite3.connect(DB_NAME).cursor().execute('SELECT AVG(is_win) FROM trades WHERE conviction_score >= 8 AND status = "CLOSED"').fetchone()
         high_conv_win_rate = res[0] if res and res[0] else 0
         
         if not total or total == 0:
