@@ -34,7 +34,11 @@ async def scrape_discord():
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(storage_state=SESSION_FILE)
+        # Set a very tall viewport to force Discord to render more messages into the DOM
+        context = await browser.new_context(
+            storage_state=SESSION_FILE,
+            viewport={'width': 1280, 'height': 4000}
+        )
         page = await context.new_page()
         
         # Apply stealth plugins
