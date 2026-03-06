@@ -28,6 +28,24 @@ PROCESSED_FILE = 'processed_messages.json'
 
 STOP_WORDS = {"CALL", "PUT", "ALERT", "BUY", "SELL", "LONG", "SHORT", "ASK", "BID", "FLOW", "SIZE", "SWEEP", "BLOCK"}
 
+def get_stable_id(ticker, strike, expiry, side, reported_time):
+    """Create a unique hash for a trade. Premium is excluded to group Interval/Hot alerts."""
+    unique_str = f"{ticker}_{strike}_{expiry}_{side}_{reported_time}"
+    return hashlib.sha256(unique_str.encode()).hexdigest()
+
+def normalize_reported_time(text):
+    """Convert 'gestern um 21:40' or 'heute um 14:00' to a stable ISO date string."""
+    now = datetime.now()
+    time_match = re.search(r'(\d{1,2}):(\d{2})', text)
+    if not time_match: return now.strftime('%Y-%m-%d')
+    
+    hour, minute = map(int, time_match.groups())
+    target_date = now
+    if "gestern" in text.lower():
+        target_date = now - timedelta(days=1)
+    
+    return target_date.replace(hour=hour, minute=minute, second=0, microsecond=0).isoformat()
+
 def parse_premium(prem_str):
     """Convert premium string like $255,500 or $1.2M to float."""
     if not prem_str: return 0
