@@ -16,6 +16,26 @@ init_db()
 async def run_comprehensive_test():
     print("--- Starting Institutional-Grade Integration Test ---")
     
+    # 0. Test Gmail Connectivity
+    print("🔹 Testing Gmail Connectivity...")
+    gmail_user = os.getenv('GMAIL_USER')
+    gmail_pass = os.getenv('GMAIL_PASS')
+    if gmail_user and gmail_pass:
+        try:
+            import imaplib
+            mail = imaplib.IMAP4_SSL("imap.gmail.com")
+            mail.login(gmail_user, gmail_pass)
+            mail.select("inbox")
+            # Searching for ANY email from n-reply@x.com to verify login even if no @FL0WG0D alert exists
+            status, messages = mail.search(None, '(FROM "n-reply@x.com")')
+            count = len(messages[0].split()) if messages[0] else 0
+            print(f"✅ Gmail Login Successful. Found {count} total X notifications.")
+            mail.logout()
+        except Exception as e:
+            print(f"❌ Gmail Connection Failed: {e}")
+    else:
+        print("⚠️ Gmail secrets missing in environment.")
+
     # 1. Simulate Scenario: "Golden Sweep" in a Mid-Cap stock
     fake_ticker = "PLTR"
     # Note: 50,000 contracts is massive compared to typical OI
@@ -29,8 +49,9 @@ async def run_comprehensive_test():
     print(f"✅ Context Fetch Complete")
 
     # 3. Test Gemini Analysis (Full Institutional Mode)
-    print("🔹 Testing Gemini 3 Flash (Golden Sweep + RVOL Mode)...")
+    print("🔹 Testing Gemini 3 Flash Preview (Golden Sweep + RVOL Mode)...")
     stats = get_performance_stats()
+    daily_context = "Test Context: No other alerts today."
     
     # Simulated Market Data with Vol > OI
     market_data = (
@@ -41,7 +62,7 @@ async def run_comprehensive_test():
         "Earnings: 2026-05-05"
     )
     
-    data = await analyze_with_ai_retry(fake_trade_content, news + "\n" + sec, stats, market_data)
+    data = await analyze_with_ai_retry(fake_trade_content, news + "\n" + sec, stats, market_data, daily_context)
     
     if data and isinstance(data, dict):
         print(f"✅ JSON Parsed. Golden Sweep Flag: {data.get('is_golden_sweep')}")
