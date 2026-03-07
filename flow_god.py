@@ -403,66 +403,71 @@ async def process_scraped_messages():
         
     with open(PROCESSED_FILE, 'w') as f: json.dump(processed, f)
 
-async def send_daily_x_report():
-    """Consolidated report of X flow, focused on @FL0WG0D highlights and grouped sweeps."""
-    signals = get_daily_x_signals()
-    if not signals:
-        print("📭 No X signals to report today.")
+async def send_combined_daily_report():
+    """Consolidated 3 PM EST report: X Intelligence + Institutional Trends."""
+    today = datetime.now().strftime('%Y-%m-%d')
+    past_reports = get_last_week_reports()
+    
+    # 1. Check if we already sent a report today to prevent duplicates from GAS randomization
+    if past_reports and today in str(past_reports[0]): # This is a simple check, better logic below
+        print("⏭️ Daily report already sent today.")
         return
 
-    # Group by Ticker
-    ticker_groups = {}
-    for ticker, content, is_sweep, premium in signals:
-        if ticker not in ticker_groups: ticker_groups[ticker] = []
-        ticker_groups[ticker].append({"content": content, "is_sweep": is_sweep, "premium": premium})
-
-    # Analyze groups with AI for a summary
-    raw_summary_data = ""
-    for ticker, trades in ticker_groups.items():
-        total_prem = sum(t['premium'] for t in trades)
-        sweeps = sum(1 for t in trades if t['is_sweep'])
-        raw_summary_data += f"{ticker}: {len(trades)} alerts ({sweeps} sweeps), Total Premium: ${total_prem/1e3:.0f}k\n"
-
-    prompt = f"""
-    You are the FlowGod X-Analyst. Summarize today's X options flow based on these signals:
-    {raw_summary_data}
-    
-    INSTRUCTIONS:
-    1. Focus on 'Repeat Flow' (tickers mentioned multiple times).
-    2. Highlight @FL0WG0D's most aggressive calls.
-    3. Format in clean HTML for Telegram.
-    4. Group by Bullish/Bearish sentiment.
-    """
-    
-    summary = "No summary available."
-    keys = list(GEMINI_API_KEYS)
-    random.shuffle(keys)
-    for key in keys:
+    # 2. Collect X Signals
+    signals = get_daily_x_signals()
+    x_summary = "No significant X activity today."
+    if signals:
+        raw_x_data = ""
+        ticker_groups = {}
+        for ticker, content, is_sweep, premium in signals:
+            if ticker not in ticker_groups: ticker_groups[ticker] = []
+            ticker_groups[ticker].append(premium)
+        for ticker, prems in ticker_groups.items():
+            raw_x_data += f"{ticker}: {len(prems)} alerts, Total Prem: ${sum(prems)/1e3:.0f}k\n"
+        
+        prompt_x = f"Summarize today's X options flow focusing on 'Repeat Flow' and @FL0WG0D highlights:\n{raw_x_data}"
         try:
-            client = genai.Client(api_key=key)
-            response = client.models.generate_content(model='gemini-3-flash-preview', contents=prompt)
-            summary = response.text
-            break
-        except: continue
+            client = genai.Client(api_key=random.choice(GEMINI_API_KEYS))
+            res = client.models.generate_content(model='gemini-3-flash-preview', contents=prompt_x)
+            x_summary = res.text
+        except: pass
 
-    report_content = f"🏛️ <b>END-OF-DAY X INTELLIGENCE</b>\n━━━━━━━━━━━━━━━━━\n{summary}\n\n━━━━━━━━━━━━━━━━━\n<i>FlowGod Autopilot v2.1</i>"
+    # 3. Collect Institutional Trends (>30 DTE)
+    trends = get_daily_trends()
+    trend_summary = "No long-term institutional positioning detected."
+    if trends:
+        raw_trend_data = "\n".join([f"{t}: {d}, ${p/1e6:.1f}M ({c} orders)" for t, d, p, c in trends])
+        prompt_trend = f"Summarize today's Smart Money Trends (>30 DTE):\n{raw_trend_data}\nPAST WEEK CONTEXT: {past_reports[:3]}"
+        try:
+            client = genai.Client(api_key=random.choice(GEMINI_API_KEYS))
+            res = client.models.generate_content(model='gemini-3-flash-preview', contents=prompt_trend)
+            trend_summary = res.text
+        except: pass
+
+    # 4. Dispatch Final Report
+    full_report = (f"🏛️ <b>PRE-CLOSE ALPHA REPORT</b>\n"
+                   f"<i>Timestamp: {today} | 1hr Before Close</i>\n"
+                   f"━━━━━━━━━━━━━━━━━\n\n"
+                   f"🐦 <b>X & ANALYST INTELLIGENCE</b>\n{x_summary}\n\n"
+                   f"🐋 <b>INSTITUTIONAL BATCH FLOW</b>\n{trend_summary}\n"
+                   f"━━━━━━━━━━━━━━━━━\n"
+                   f"<i>FlowGod Autopilot v2.6</i>")
+    
     bot = Bot(token=TELEGRAM_TOKEN)
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=report_content, parse_mode='HTML')
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=full_report, parse_mode='HTML')
+    log_report(f"SENT_{today}") # Mark as sent
+    clear_daily_flow()
 
 async def main():
     import sys
     if not TELEGRAM_TOKEN: return
     
-    # Handle Daily Report Flag
+    # Handle Daily Report Flag (Triggered by Google Script/GitHub Action)
     if "--report" in sys.argv:
         hour = datetime.now().hour
+        # 20:00 UTC is 3:00 PM EST (1hr before close)
         if hour == 20:
-            print("📢 Generating X Intelligence Report (3 PM EST)")
-            await send_daily_x_report()
-        elif hour >= 21:
-            print("📢 Generating Market Close Trends (4 PM EST)")
-            # At market close, we send institutional trends and clear the daily flow
-            await send_daily_trends()
+            await send_combined_daily_report()
         return
 
     if os.path.exists('unusual_messages.json'):

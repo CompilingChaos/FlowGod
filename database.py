@@ -45,18 +45,14 @@ def init_db():
             )
         ''')
         
-        # --- AUTO-MIGRATION LOGIC ---
-        # Add columns if they don't exist (handles existing DBs in GitHub Actions)
         cursor.execute("PRAGMA table_info(trades)")
         columns = [row[1] for row in cursor.fetchall()]
         if 'option_entry_price' not in columns:
-            print("🔧 Migrating DB: Adding option_entry_price to trades table")
             cursor.execute("ALTER TABLE trades ADD COLUMN option_entry_price REAL DEFAULT 0.0")
             
         cursor.execute("PRAGMA table_info(long_term_flow)")
         columns = [row[1] for row in cursor.fetchall()]
         if 'side' not in columns:
-            print("🔧 Migrating DB: Adding side to long_term_flow table")
             cursor.execute("ALTER TABLE long_term_flow ADD COLUMN side TEXT DEFAULT 'Unknown'")
         
         cursor.execute('''
@@ -66,7 +62,38 @@ def init_db():
                 content TEXT
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS x_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT,
+                content TEXT,
+                timestamp TIMESTAMP,
+                is_sweep INTEGER DEFAULT 0,
+                premium REAL DEFAULT 0.0
+            )
+        ''')
         conn.commit()
+
+def log_x_signal(ticker, content, is_sweep, premium=0.0):
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO x_signals (ticker, content, timestamp, is_sweep, premium)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (ticker, content, datetime.now().isoformat(), 1 if is_sweep else 0, premium))
+        conn.commit()
+
+def get_daily_x_signals():
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        today = datetime.now().strftime('%Y-%m-%d')
+        cursor.execute('''
+            SELECT ticker, content, is_sweep, premium 
+            FROM x_signals 
+            WHERE timestamp LIKE ?
+            ORDER BY timestamp ASC
+        ''', (f'{today}%',))
+        return cursor.fetchall()
 
 def log_report(content):
     with sqlite3.connect(DB_NAME) as conn:
@@ -85,9 +112,8 @@ def clear_daily_flow():
     """Clear today's helping values for a fresh start tomorrow."""
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
-        # 1. Clear the long-term trend buffer
         cursor.execute('DELETE FROM long_term_flow')
-        # 2. We keep the trades for historical P/L, but they won't match tomorrow's "today" query
+        cursor.execute('DELETE FROM x_signals')
         conn.commit()
 
 def log_long_term_flow(ticker, direction, strike, expiry, premium, vol_oi, otm, side):
@@ -131,7 +157,6 @@ def get_ticker_daily_stats(ticker):
         today = datetime.now().strftime('%Y-%m-%d')
         stats = {"CALL": {"count": 0, "prem": 0}, "PUT": {"count": 0, "prem": 0}}
         
-        # 1. Query trades table
         cursor.execute('''
             SELECT direction, COUNT(*), SUM(premium) 
             FROM trades WHERE ticker = ? AND entry_time LIKE ? 
@@ -142,7 +167,6 @@ def get_ticker_daily_stats(ticker):
             stats[d]["count"] += count
             stats[d]["prem"] += (prem or 0)
 
-        # 2. Query long_term_flow table
         cursor.execute('''
             SELECT direction, COUNT(*), SUM(premium) 
             FROM long_term_flow WHERE ticker = ? AND entry_time LIKE ? 
@@ -163,7 +187,7 @@ def get_performance_stats():
         total, wins = (row[0], row[1]) if row else (0, 0)
         
         cursor.execute('SELECT AVG(is_win) FROM trades WHERE conviction_score >= 8 AND status = "CLOSED"')
-        res = sqlite3.connect(DB_NAME).cursor().execute('SELECT AVG(is_win) FROM trades WHERE conviction_score >= 8 AND status = "CLOSED"').fetchone()
+        res = cursor.fetchone()
         high_conv_win_rate = res[0] if res and res[0] else 0
         
         if not total or total == 0:
