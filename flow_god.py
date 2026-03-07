@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timedelta
 import re
 import hashlib
-from database import init_db, log_trade, get_performance_stats, log_long_term_flow, get_daily_trends, log_report, get_last_week_reports, clear_daily_flow, get_ticker_daily_stats
+from database import init_db, log_trade, get_performance_stats, log_long_term_flow, get_daily_trends, log_report, get_last_week_reports, clear_daily_flow, get_ticker_daily_stats, get_daily_x_signals, log_x_signal
 
 load_dotenv()
 init_db()
@@ -144,11 +144,11 @@ async def get_macro_context():
         return f"SPY: {spy_ret:+.2f}%, QQQ: {qqq_ret:+.2f}%"
     except: return "Macro data unavailable."
 
-async def analyze_with_ai_retry(trade_content, news_context, stats, market_data, daily_context):
+async def analyze_with_ai_retry(trade_content, news_context, stats, market_data, daily_context, images=None):
     keys = list(GEMINI_API_KEYS)
     random.shuffle(keys)
     prompt = f"""
-    Analyze this Unusual Whales trade report:
+    Analyze this Unusual Options trade report:
     {trade_content}
     QUANTITATIVE & OPTION DATA:
     {market_data}
@@ -160,12 +160,17 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data,
     {stats}
     Return a JSON object with: is_insider, insider_conviction (1-10), is_golden_sweep, iv_warning, insider_logic (HTML), meaningfulness, direction (LONG/SHORT), leverage, timeframe_hours, timeframe_text (human-readable), target_price, stop_loss, analysis (HTML).
     """
+    contents = [prompt]
+    if images:
+        for img_url in images:
+            contents.append({"type": "image_url", "image_url": img_url})
+
     for key in keys:
         try:
             client = genai.Client(api_key=key)
             response = client.models.generate_content(
                 model='gemini-3-flash-preview',
-                contents=prompt,
+                contents=contents,
                 config=types.GenerateContentConfig(response_mime_type='application/json')
             )
             data = json.loads(response.text)
@@ -196,7 +201,7 @@ def get_mkt_cap_threshold(mkt_cap):
     if cap_b < 200: return 500000     # Large Cap: $500k
     return 2000000                    # Mega Cap (NVDA, MSFT, etc): $2M
 
-async def perform_full_analysis(trade_info, msg_time=None):
+async def perform_full_analysis(trade_info, msg_time=None, images=None):
     """Core analysis logic reusable for Discord or Telegram."""
     clean_info = str(trade_info).replace("🔥", "").replace("🚨", "").strip()
     
@@ -221,24 +226,24 @@ async def perform_full_analysis(trade_info, msg_time=None):
         ticker = ts_match.group(1).upper()
         strike_val = ts_match.group(2); option_type = "Calls" if ts_match.group(3).upper() == "C" else "Puts"; expiry_val = ts_match.group(4)
     else:
-        ticker_match = re.search(r'^([A-Z]{1,5})\b', clean_info)
-        ticker = ticker_match.group(1).upper() if ticker_match else "SPY"
-        strike_match = re.search(r'\b([\d\.]+)\s+([CP])\b', clean_info)
-        strike_val = strike_match.group(1) if strike_match else "N/A"
-        option_type = "Calls" if (strike_match and strike_match.group(2) == "C") else "Options"
-        expiry_match = re.search(r'(\d{2}/\d{2}/\d{4})', clean_info)
-        expiry_val = expiry_match.group(1) if expiry_match else "N/A"
+        # Fallback for X posts
+        ticker_match = re.search(r'\b([A-Z]{1,5})\b', clean_info)
+        ticker = ticker_match.group(1).upper() if ticker_match else "SCAN"
+        strike_val = "N/A"; option_type = "Options"; expiry_val = "N/A"
 
     stable_id = get_stable_id(ticker, strike_val, expiry_val, side, time_str)
 
     iv_rank = calculate_iv_rank(ticker)
+    entry_price = 0
+    market_data = "Scanning for data..."
+    
     try:
         tk = yf.Ticker(ticker); hist_full = tk.history(period="1y"); entry_price = round(hist_full['Close'].iloc[-1], 2); mkt_cap = (tk.info.get('marketCap') or tk.info.get('totalAssets', 0)) if tk.info else 0
         sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2); rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2); macro = await get_macro_context()
         
         # 2. Market Cap Relative Filtering
         threshold = get_mkt_cap_threshold(mkt_cap)
-        if premium_usd < threshold:
+        if ticker != "SCAN" and premium_usd > 0 and premium_usd < threshold:
             return "FILTERED_BY_CAP", ticker, None, 0, stable_id
 
         golden_sweep_context = f"UNUSUALLY HIGH VOL/OI ({vol_oi}x)" if vol_oi > 2.0 else "Standard liquidity"
@@ -246,20 +251,23 @@ async def perform_full_analysis(trade_info, msg_time=None):
                       f"Option: {strike_val} {option_type} Exp {expiry_val} | Side: {side} (Aggression: {ask_pct}% Ask)\n"
                       f"Context: {multi_pct}% Multi-leg | Vol/OI: {vol_oi} ({golden_sweep_context})\n"
                       f"Metrics: RSI={rsi}, 50SMA=${sma50} | Macro: {macro}")
-    except:
-        if premium_usd < 100000: return None, ticker, None, 0, stable_id
-        entry_price, market_data = 0, "Data fetch failed."
-
-    if is_long_term(expiry_val):
-        log_long_term_flow(ticker, option_type, strike_val, expiry_val, premium_usd, vol_oi, 0, side)
-        return "STORED", ticker, None, 0, stable_id
+    except Exception as e:
+        if ticker != "SCAN" and premium_usd > 0 and premium_usd < 100000: return None, ticker, None, 0, stable_id
+        market_data = "Data fetch partially failed."
 
     news = fetch_news(ticker); sec = fetch_news(ticker, query_type="sec"); stats = get_performance_stats()
     d_stats = get_ticker_daily_stats(ticker)
     daily_context = f"This day there have been {d_stats['CALL']['count']} call alerts with a total premium of ${d_stats['CALL']['prem']/1e3:.0f}k and {d_stats['PUT']['count']} puts with a premium of ${d_stats['PUT']['prem']/1e3:.0f}k."
-    data = await analyze_with_ai_retry(trade_info, news + "\n" + sec, stats, market_data, daily_context)
     
-    if not data: return None, ticker, stats, entry_price, stable_id
+    # --- RESTORED: Long-term flow logging for Daily Trends ---
+    if is_long_term(expiry_val):
+        log_long_term_flow(ticker, option_type, strike_val, expiry_val, premium_usd, vol_oi, 0, side)
+        return "STORED", ticker, None, 0, stable_id
+
+    data = await analyze_with_ai_retry(trade_info, news + "\n" + sec, stats, market_data, daily_context, images=images)
+    
+    if not data:
+        return None, ticker, stats, entry_price, stable_id
 
     # --- ROBUST NUMERIC PARSING ---
     # Ensure AI-returned strings are converted to numbers before DB logging
@@ -395,12 +403,65 @@ async def process_scraped_messages():
         
     with open(PROCESSED_FILE, 'w') as f: json.dump(processed, f)
 
+async def send_daily_x_report():
+    """Consolidated report of X flow, focused on @FL0WG0D highlights and grouped sweeps."""
+    signals = get_daily_x_signals()
+    if not signals:
+        print("📭 No X signals to report today.")
+        return
+
+    # Group by Ticker
+    ticker_groups = {}
+    for ticker, content, is_sweep, premium in signals:
+        if ticker not in ticker_groups: ticker_groups[ticker] = []
+        ticker_groups[ticker].append({"content": content, "is_sweep": is_sweep, "premium": premium})
+
+    # Analyze groups with AI for a summary
+    raw_summary_data = ""
+    for ticker, trades in ticker_groups.items():
+        total_prem = sum(t['premium'] for t in trades)
+        sweeps = sum(1 for t in trades if t['is_sweep'])
+        raw_summary_data += f"{ticker}: {len(trades)} alerts ({sweeps} sweeps), Total Premium: ${total_prem/1e3:.0f}k\n"
+
+    prompt = f"""
+    You are the FlowGod X-Analyst. Summarize today's X options flow based on these signals:
+    {raw_summary_data}
+    
+    INSTRUCTIONS:
+    1. Focus on 'Repeat Flow' (tickers mentioned multiple times).
+    2. Highlight @FL0WG0D's most aggressive calls.
+    3. Format in clean HTML for Telegram.
+    4. Group by Bullish/Bearish sentiment.
+    """
+    
+    summary = "No summary available."
+    keys = list(GEMINI_API_KEYS)
+    random.shuffle(keys)
+    for key in keys:
+        try:
+            client = genai.Client(api_key=key)
+            response = client.models.generate_content(model='gemini-3-flash-preview', contents=prompt)
+            summary = response.text
+            break
+        except: continue
+
+    report_content = f"🏛️ <b>END-OF-DAY X INTELLIGENCE</b>\n━━━━━━━━━━━━━━━━━\n{summary}\n\n━━━━━━━━━━━━━━━━━\n<i>FlowGod Autopilot v2.1</i>"
+    bot = Bot(token=TELEGRAM_TOKEN)
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=report_content, parse_mode='HTML')
+
 async def main():
+    import sys
     if not TELEGRAM_TOKEN: return
-    # FlowGod now runs exclusively in Autopilot mode via GitHub Actions
+    
+    # Handle Daily Report Flag (One hour before market close)
+    if "--report" in sys.argv:
+        await send_daily_x_report()
+        # Also send the daily institutional trends from long_term_flow
+        await send_daily_trends()
+        return
+
     if os.path.exists('unusual_messages.json'):
         await process_scraped_messages()
-        if datetime.now().hour >= 21: await send_daily_trends()
         return
     else:
         print("💡 No message file found. FlowGod is optimized for remote Autopilot execution.")
