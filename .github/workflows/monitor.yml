@@ -54,13 +54,10 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # Robust check for specific report times
+          # The 20:00 UTC (3 PM EST) run triggers the consolidated Alpha Report
           HOUR=$(date +%H)
           if [ "$HOUR" = "20" ]; then
-            echo "📢 Triggering X Intelligence Report (3 PM EST)"
-            python flow_god.py --report
-          elif [ "$HOUR" = "21" ]; then
-            echo "📢 Triggering Market Close Trends (4 PM EST)"
+            echo "📢 Triggering Combined Pre-Close Alpha Report"
             python flow_god.py --report
           else
             python flow_god.py
