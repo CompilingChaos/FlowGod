@@ -1,9 +1,13 @@
 name: FlowGod Monitor
 
 on:
-  # schedule:
-  #   # Run every 15 minutes, Monday-Friday, from 14:00 to 21:00 UTC (9:00 AM - 4:00 PM EST)
-  #   - cron: '*/15 14-21 * * 1-5'
+  schedule:
+    # Run every 15 minutes, Monday-Friday, from 14:00 to 21:00 UTC
+    - cron: '*/15 14-21 * * 1-5'
+    # Run the Daily Summary Report at 20:00 UTC (15:00 EST, 1hr before close)
+    - cron: '0 20 * * 1-5'
+    # Run the Market Close trends at 21:00 UTC (16:00 EST)
+    - cron: '0 21 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -17,7 +21,7 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-          cache: 'pip' # Caches pip dependencies automatically
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
@@ -42,12 +46,32 @@ jobs:
           fi
           python discord_scraper.py
 
+      - name: Monitor X (via Gmail)
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python x_monitor.py
+
       - name: Run FlowGod
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python flow_god.py
+        run: |
+          # Robust check for specific report times
+          HOUR=$(date +%H)
+          if [ "$HOUR" = "20" ]; then
+            echo "📢 Triggering X Intelligence Report (3 PM EST)"
+            python flow_god.py --report
+          elif [ "$HOUR" = "21" ]; then
+            echo "📢 Triggering Market Close Trends (4 PM EST)"
+            python flow_god.py --report
+          else
+            python flow_god.py
+          fi
 
       - name: Market Validation
         env:

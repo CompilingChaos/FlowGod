@@ -453,11 +453,16 @@ async def main():
     import sys
     if not TELEGRAM_TOKEN: return
     
-    # Handle Daily Report Flag (One hour before market close)
+    # Handle Daily Report Flag
     if "--report" in sys.argv:
-        await send_daily_x_report()
-        # Also send the daily institutional trends from long_term_flow
-        await send_daily_trends()
+        hour = datetime.now().hour
+        if hour == 20:
+            print("📢 Generating X Intelligence Report (3 PM EST)")
+            await send_daily_x_report()
+        elif hour >= 21:
+            print("📢 Generating Market Close Trends (4 PM EST)")
+            # At market close, we send institutional trends and clear the daily flow
+            await send_daily_trends()
         return
 
     if os.path.exists('unusual_messages.json'):
