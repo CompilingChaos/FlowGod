@@ -134,11 +134,27 @@ async def main():
         print("📭 No new targeted email alerts.")
         return
 
+    # Load existing processed list to prevent duplicates
+    PROCESSED_FILE = 'processed_messages.json'
+    processed = []
+    if os.path.exists(PROCESSED_FILE):
+        try:
+            with open(PROCESSED_FILE, 'r') as f:
+                processed = json.load(f)
+        except: pass
+
     bot = Bot(token=TELEGRAM_TOKEN)
+    new_processed_found = False
 
     for alert in alerts:
         url = alert['url']
         author = alert['author']
+        
+        # DEDUPLICATION CHECK
+        if url in processed:
+            print(f"⏭️ Skipping already processed X alert: {url}")
+            continue
+
         print(f"🔔 Found Alert from {author}: {url}")
 
         if author == "NOLIMITGAINS":
@@ -146,6 +162,8 @@ async def main():
             msg = f"🚨 <b>NoLimitGains Posted:</b>\n{url}"
             await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='HTML')
             print("✅ NoLimitGains link dispatched.")
+            processed.append(url)
+            new_processed_found = True
             continue
 
         if author == "FLOWGOD":
@@ -177,8 +195,18 @@ async def main():
                     
                     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='HTML', disable_web_page_preview=True)
                     print(f"✅ X Signal Dispatched: {ticker}")
-            else:
-                print(f"⏭️ Signal filtered or stored: {ticker if ticker else 'Unknown'}")
+            
+            # Mark as processed regardless of conviction score so we don't re-analyze
+            processed.append(url)
+            new_processed_found = True
+
+    # Save updated processed list
+    if new_processed_found:
+        # Keep only last 1000 entries to prevent file bloating
+        if len(processed) > 1000:
+            processed = processed[-1000:]
+        with open(PROCESSED_FILE, 'w') as f:
+            json.dump(processed, f)
 
 if __name__ == "__main__":
     asyncio.run(main())
