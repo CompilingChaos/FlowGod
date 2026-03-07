@@ -53,6 +53,10 @@ async def validate_trades():
                 current_price = float(hist['Close'].iloc[-1])
                 
                 # Calculate P/L
+                if entry_price == 0:
+                    print(f"⚠️ Skipping ROI calculation for {ticker}: Entry price is 0.")
+                    continue
+
                 if "LONG" in direction or "CALL" in direction:
                     raw_pnl = (current_price - entry_price) / entry_price
                 else:

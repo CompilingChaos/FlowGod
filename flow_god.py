@@ -28,11 +28,6 @@ PROCESSED_FILE = 'processed_messages.json'
 
 STOP_WORDS = {"CALL", "PUT", "ALERT", "BUY", "SELL", "LONG", "SHORT", "ASK", "BID", "FLOW", "SIZE", "SWEEP", "BLOCK"}
 
-def get_stable_id(ticker, strike, expiry, side, reported_time):
-    """Create a unique hash for a trade. Premium is excluded to group Interval/Hot alerts."""
-    unique_str = f"{ticker}_{strike}_{expiry}_{side}_{reported_time}"
-    return hashlib.sha256(unique_str.encode()).hexdigest()
-
 def normalize_reported_time(text):
     """Convert 'gestern um 21:40' or 'heute um 14:00' to a stable ISO date string."""
     now = datetime.now()
@@ -462,19 +457,19 @@ async def main():
     import sys
     if not TELEGRAM_TOKEN: return
     
-    # Handle Daily Report Flag (Triggered by Google Script/GitHub Action)
+    # 1. Process standard signals (always run this to prevent skipping alerts)
+    if os.path.exists('unusual_messages.json'):
+        await process_scraped_messages()
+    else:
+        print("💡 No message file found. FlowGod is optimized for remote Autopilot execution.")
+
+    # 2. Handle Daily Report Flag (If triggered by Google Script / Workflow)
     if "--report" in sys.argv:
         hour = datetime.now().hour
         # 20:00 UTC is 3:00 PM EST (1hr before close)
         if hour == 20:
+            print("📢 Generating Consolidated Alpha Report...")
             await send_combined_daily_report()
-        return
-
-    if os.path.exists('unusual_messages.json'):
-        await process_scraped_messages()
-        return
-    else:
-        print("💡 No message file found. FlowGod is optimized for remote Autopilot execution.")
 
 if __name__ == "__main__":
     asyncio.run(main())
