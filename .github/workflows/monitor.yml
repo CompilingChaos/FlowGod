@@ -1,13 +1,6 @@
 name: FlowGod Monitor
 
 on:
-  schedule:
-    # Run every 15 minutes, Monday-Friday, from 14:00 to 21:00 UTC
-    - cron: '*/15 14-21 * * 1-5'
-    # Run the Daily Summary Report at 20:00 UTC (15:00 EST, 1hr before close)
-    - cron: '0 20 * * 1-5'
-    # Run the Market Close trends at 21:00 UTC (16:00 EST)
-    - cron: '0 21 * * 1-5'
   workflow_dispatch:
 
 jobs:
