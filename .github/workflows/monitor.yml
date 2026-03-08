@@ -1,6 +1,9 @@
 name: FlowGod Monitor
 
 on:
+  schedule:
+    # Run every 15 minutes, Monday-Friday, from 14:00 to 21:00 UTC (9:00 AM - 4:00 PM EST)
+    - cron: '*/15 14-21 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -39,29 +42,12 @@ jobs:
           fi
           python discord_scraper.py
 
-      - name: Monitor X (via Gmail)
-        env:
-          GMAIL_USER: ${{ secrets.GMAIL_USER }}
-          GMAIL_PASS: ${{ secrets.GMAIL_PASS }}
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python x_monitor.py
-
       - name: Run FlowGod
         env:
           GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          # The 20:00 UTC (3 PM EST) run triggers the consolidated Alpha Report
-          HOUR=$(date +%H)
-          if [ "$HOUR" = "20" ]; then
-            echo "📢 Triggering Combined Pre-Close Alpha Report"
-            python flow_god.py --report
-          else
-            python flow_god.py
-          fi
+        run: python flow_god.py
 
       - name: Market Validation
         env:

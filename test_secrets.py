@@ -7,38 +7,20 @@ import yfinance as yf
 from google import genai
 from telegram import Bot
 from dotenv import load_dotenv
-from flow_god import analyze_with_ai_retry, fetch_news
-from database import init_db, log_trade, get_performance_stats
+from flow_god import analyze_with_ai_retry, fetch_news, get_performance_stats, format_telegram_msg
 
 load_dotenv()
-init_db()
+
+# Required Secrets
+GEMINI_API_KEYS = [k.strip() for k in os.getenv('GEMINI_API_KEYS', '').split(',') if k.strip()]
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 async def run_comprehensive_test():
     print("--- Starting Institutional-Grade Integration Test ---")
     
-    # 0. Test Gmail Connectivity
-    print("🔹 Testing Gmail Connectivity...")
-    gmail_user = os.getenv('GMAIL_USER')
-    gmail_pass = os.getenv('GMAIL_PASS')
-    if gmail_user and gmail_pass:
-        try:
-            import imaplib
-            mail = imaplib.IMAP4_SSL("imap.gmail.com")
-            mail.login(gmail_user, gmail_pass)
-            mail.select("inbox")
-            # Searching for ANY email from n-reply@x.com to verify login even if no @FL0WG0D alert exists
-            status, messages = mail.search(None, '(FROM "n-reply@x.com")')
-            count = len(messages[0].split()) if messages[0] else 0
-            print(f"✅ Gmail Login Successful. Found {count} total X notifications.")
-            mail.logout()
-        except Exception as e:
-            print(f"❌ Gmail Connection Failed: {e}")
-    else:
-        print("⚠️ Gmail secrets missing in environment.")
-
     # 1. Simulate Scenario: "Golden Sweep" in a Mid-Cap stock
     fake_ticker = "PLTR"
-    # Note: 50,000 contracts is massive compared to typical OI
     fake_trade_content = "🚨 UNUSUAL WHALES ALERT: PLTR $35 Calls expiring Friday. Volume: 50,000 contracts. Aggressive sweep detected."
     print(f"🔹 Simulated Scenario: {fake_ticker} (Golden Sweep Simulation)")
 
@@ -53,7 +35,6 @@ async def run_comprehensive_test():
     stats = get_performance_stats()
     daily_context = "Test Context: No other alerts today."
     
-    # Simulated Market Data with Vol > OI
     market_data = (
         "Ticker: PLTR @ $32.50 | Market Cap: $72.4B | ADV: 45,000,000\n"
         "Technicals: RSI=62, 50SMA=$28.40\n"
@@ -64,53 +45,24 @@ async def run_comprehensive_test():
     
     data = await analyze_with_ai_retry(fake_trade_content, news + "\n" + sec, stats, market_data, daily_context)
     
-    if data and isinstance(data, dict):
-        print(f"✅ JSON Parsed. Golden Sweep Flag: {data.get('is_golden_sweep')}")
-    else:
-        print(f"❌ Gemini Analysis Failed")
+    if not data:
+        print("❌ AI Analysis Failed")
         return
 
-    # 4. Test Telegram Notification (Advanced Layout)
-    print("🔹 Sending Institutional Signal to Telegram...")
-    tg_token = os.getenv('TELEGRAM_TOKEN')
-    tg_chat_id = os.getenv('TELEGRAM_CHAT_ID')
-    if tg_token and tg_chat_id:
-        try:
-            bot = Bot(token=tg_token)
-            insider_tag = "🚨 <b>INSIDER ALERT</b>" if data['is_insider'] else "📊 <b>STANDARD FLOW</b>"
-            golden_tag = "🏆 <b>GOLDEN SWEEP DETECTED</b>\n" if data.get('is_golden_sweep') else ""
-            iv_msg = "HIGH IV RISK" if data['iv_warning'] is True else data['iv_warning']
-            iv_box = f"⚠️ <b>{iv_msg}</b>\n━━━━━━━━━━━━━━━━━\n" if data['iv_warning'] else ""
-            
-            final_msg = (
-                f"🧪 <b>TEST: {fake_ticker} (INSTITUTIONAL UI)</b>\n"
-                f"{insider_tag}\n"
-                f"{golden_tag}"
-                f"━━━━━━━━━━━━━━━━━\n"
-                f"{iv_box}"
-                f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n"
-                f"🐋 <b>Meaning:</b> {data['meaningfulness']}\n"
-                f"━━━━━━━━━━━━━━━━━\n"
-                f"📊 <b>Action:</b> <code>{data['direction']}</code>\n"
-                f"⚙️ <b>Leverage:</b> <code>{data['leverage']}x</code>\n"
-                f"⏱ <b>Timeframe:</b> <code>{data['timeframe_hours']}h</code>\n"
-                f"━━━━━━━━━━━━━━━━━\n"
-                f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n"
-                f"🛑 <b>Stop Loss:</b> <code>${data['stop_loss']}</code>\n"
-                f"━━━━━━━━━━━━━━━━━\n"
-                f"🔍 <b>INSIDER EVIDENCE:</b>\n"
-                f"{data['insider_logic']}\n"
-                f"━━━━━━━━━━━━━━━━━\n"
-                f"🧐 <b>CRITICAL ANALYSIS:</b>\n"
-                f"<i>{data['analysis']}</i>\n\n"
-                f"📈 <i>{stats}</i>"
-            )
-            await bot.send_message(chat_id=tg_chat_id, text=final_msg, parse_mode='HTML')
-            print("✅ Institutional Signal Message Sent")
-        except Exception as e:
-            print(f"❌ Telegram Failed: {e}")
+    print(f"✅ JSON Parsed. Golden Sweep Flag: {data.get('is_golden_sweep')}")
 
-    # 5. Cleanup
+    # 4. Test Telegram Output
+    print("🔹 Sending Institutional Signal to Telegram...")
+    msg = format_telegram_msg(fake_ticker, data, stats)
+    
+    if TELEGRAM_TOKEN:
+        bot = Bot(token=TELEGRAM_TOKEN)
+        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='HTML')
+        print("✅ Institutional Signal Message Sent")
+    else:
+        print("⚠️ TELEGRAM_TOKEN missing, skipping message send.")
+
+    # 5. Database Verification (Cleanup)
     with sqlite3.connect('flow_god.db') as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM trades WHERE ticker = ?", (fake_ticker,))

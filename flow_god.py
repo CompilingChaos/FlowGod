@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timedelta
 import re
 import hashlib
-from database import init_db, log_trade, get_performance_stats, log_long_term_flow, get_daily_trends, log_report, get_last_week_reports, clear_daily_flow, get_ticker_daily_stats, get_daily_x_signals, log_x_signal
+from database import init_db, log_trade, get_performance_stats, log_long_term_flow, get_daily_trends, log_report, get_last_week_reports, clear_daily_flow, get_ticker_daily_stats
 
 load_dotenv()
 init_db()
@@ -139,7 +139,7 @@ async def get_macro_context():
         return f"SPY: {spy_ret:+.2f}%, QQQ: {qqq_ret:+.2f}%"
     except: return "Macro data unavailable."
 
-async def analyze_with_ai_retry(trade_content, news_context, stats, market_data, daily_context, images=None):
+async def analyze_with_ai_retry(trade_content, news_context, stats, market_data, daily_context):
     keys = list(GEMINI_API_KEYS)
     random.shuffle(keys)
     prompt = f"""
@@ -155,17 +155,12 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data,
     {stats}
     Return a JSON object with: is_insider, insider_conviction (1-10), is_golden_sweep, iv_warning, insider_logic (HTML), meaningfulness, direction (LONG/SHORT), leverage, timeframe_hours, timeframe_text (human-readable), target_price, stop_loss, analysis (HTML).
     """
-    contents = [prompt]
-    if images:
-        for img_url in images:
-            contents.append({"type": "image_url", "image_url": img_url})
-
     for key in keys:
         try:
             client = genai.Client(api_key=key)
             response = client.models.generate_content(
                 model='gemini-3-flash-preview',
-                contents=contents,
+                contents=prompt,
                 config=types.GenerateContentConfig(response_mime_type='application/json')
             )
             data = json.loads(response.text)
@@ -196,7 +191,7 @@ def get_mkt_cap_threshold(mkt_cap):
     if cap_b < 200: return 500000     # Large Cap: $500k
     return 2000000                    # Mega Cap (NVDA, MSFT, etc): $2M
 
-async def perform_full_analysis(trade_info, msg_time=None, images=None):
+async def perform_full_analysis(trade_info, msg_time=None):
     """Core analysis logic reusable for Discord or Telegram."""
     clean_info = str(trade_info).replace("🔥", "").replace("🚨", "").strip()
     
@@ -221,10 +216,13 @@ async def perform_full_analysis(trade_info, msg_time=None, images=None):
         ticker = ts_match.group(1).upper()
         strike_val = ts_match.group(2); option_type = "Calls" if ts_match.group(3).upper() == "C" else "Puts"; expiry_val = ts_match.group(4)
     else:
-        # Fallback for X posts
-        ticker_match = re.search(r'\b([A-Z]{1,5})\b', clean_info)
-        ticker = ticker_match.group(1).upper() if ticker_match else "SCAN"
-        strike_val = "N/A"; option_type = "Options"; expiry_val = "N/A"
+        ticker_match = re.search(r'^([A-Z]{1,5})\b', clean_info)
+        ticker = ticker_match.group(1).upper() if ticker_match else "SPY"
+        strike_match = re.search(r'\b([\d\.]+)\s+([CP])\b', clean_info)
+        strike_val = strike_match.group(1) if strike_match else "N/A"
+        option_type = "Calls" if (strike_match and strike_match.group(2) == "C") else "Options"
+        expiry_match = re.search(r'(\d{2}/\d{2}/\d{4})', clean_info)
+        expiry_val = expiry_match.group(1) if expiry_match else "N/A"
 
     stable_id = get_stable_id(ticker, strike_val, expiry_val, side, time_str)
 
@@ -238,7 +236,7 @@ async def perform_full_analysis(trade_info, msg_time=None, images=None):
         
         # 2. Market Cap Relative Filtering
         threshold = get_mkt_cap_threshold(mkt_cap)
-        if ticker != "SCAN" and premium_usd > 0 and premium_usd < threshold:
+        if premium_usd > 0 and premium_usd < threshold:
             return "FILTERED_BY_CAP", ticker, None, 0, stable_id
 
         golden_sweep_context = f"UNUSUALLY HIGH VOL/OI ({vol_oi}x)" if vol_oi > 2.0 else "Standard liquidity"
@@ -247,7 +245,7 @@ async def perform_full_analysis(trade_info, msg_time=None, images=None):
                       f"Context: {multi_pct}% Multi-leg | Vol/OI: {vol_oi} ({golden_sweep_context})\n"
                       f"Metrics: RSI={rsi}, 50SMA=${sma50} | Macro: {macro}")
     except Exception as e:
-        if ticker != "SCAN" and premium_usd > 0 and premium_usd < 100000: return None, ticker, None, 0, stable_id
+        if premium_usd > 0 and premium_usd < 100000: return None, ticker, None, 0, stable_id
         market_data = "Data fetch partially failed."
 
     news = fetch_news(ticker); sec = fetch_news(ticker, query_type="sec"); stats = get_performance_stats()
@@ -259,7 +257,7 @@ async def perform_full_analysis(trade_info, msg_time=None, images=None):
         log_long_term_flow(ticker, option_type, strike_val, expiry_val, premium_usd, vol_oi, 0, side)
         return "STORED", ticker, None, 0, stable_id
 
-    data = await analyze_with_ai_retry(trade_info, news + "\n" + sec, stats, market_data, daily_context, images=images)
+    data = await analyze_with_ai_retry(trade_info, news + "\n" + sec, stats, market_data, daily_context)
     
     if not data:
         return None, ticker, stats, entry_price, stable_id
@@ -332,8 +330,6 @@ def format_telegram_msg(ticker, data, stats, label="SIGNAL"):
     
     clean_analysis = clean_html(analysis_text)
     premium_str = f"${data.get('premium', 0):,.0f}" if isinstance(data.get('premium'), (int, float)) else str(data.get('premium'))
-    if data.get('premium') == 0 and 'premium_usd' in locals(): # Fallback if data dict doesn't have it yet
-        premium_str = f"${premium_usd:,.0f}"
 
     return (f"<b>FLOWGOD: {ticker}</b>\n{header_tag}\n{golden_tag}━━━━━━━━━━━━━━━━━\n{iv_box}"
             f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n"
@@ -346,130 +342,51 @@ async def process_scraped_messages():
     with open('unusual_messages.json', 'r') as f: scraped = json.load(f)
     
     # 4. Parent-Child Deduplication
-    # We group by stable_id (Ticker+Strike+Expiry+Side+Time)
     unique_signals = {}
     for msg in scraped:
         content = msg['content']
-        # Preliminary pass to extract ID and Premium
         prem_match = re.search(r'Prem(?:ium)?:\s*\$([\d\.,]+[KMB]?)', content, re.I)
         premium = parse_premium(prem_match.group(1) if prem_match else "0")
-        
-        # Determine if it's a "Hot" version (higher priority)
         is_hot = "🔥" in content or "Hot Contract" in content
         
-        # Temporary parsing for grouping
         ts_match = re.search(r'([A-Z]{1,5})\s+([\d\.]+)\s+([CP])\s+([\d\/]{8,10})', content, re.DOTALL)
         side_match = re.search(r'(Ask|Bid|Mid)\s+Side', content, re.I)
         if not ts_match: continue
         
         ticker = ts_match.group(1).upper()
-        strike = ts_match.group(2)
-        expiry = ts_match.group(4)
-        side = side_match.group(1).capitalize() if side_match else "Unknown"
+        strike = ts_match.group(2); expiry = ts_match.group(4); side = side_match.group(1).capitalize() if side_match else "Unknown"
         time_id = normalize_reported_time(content)
         
         sid = get_stable_id(ticker, strike, expiry, side, time_id)
-        
-        # Store the best version (Hot Contract or highest premium)
-        if sid not in unique_signals:
+        if sid not in unique_signals or (is_hot and not unique_signals[sid]['is_hot']) or (premium > unique_signals[sid]['premium'] * 1.1):
             unique_signals[sid] = {"content": content, "premium": premium, "is_hot": is_hot}
-        else:
-            # Overwrite if current is Hot and existing isn't, OR if premium is significantly higher
-            if (is_hot and not unique_signals[sid]['is_hot']) or (premium > unique_signals[sid]['premium'] * 1.1):
-                unique_signals[sid] = {"content": content, "premium": premium, "is_hot": is_hot}
 
     processed = []
     if os.path.exists(PROCESSED_FILE):
         with open(PROCESSED_FILE, 'r') as f: processed = json.load(f)
     
     for sid, signal in unique_signals.items():
-        if sid in processed:
-            print(f"⏭️ Skipping duplicate: {sid[:10]}")
-            continue
-            
+        if sid in processed: continue
         data, ticker, stats, entry_price, stable_id = await perform_full_analysis(signal['content'])
-        
         if data and data not in ["STORED", "FILTERED_BY_CAP"] and data['insider_conviction'] >= 6:
             bot = Bot(token=TELEGRAM_TOKEN)
             await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=format_telegram_msg(ticker, data, stats), parse_mode='HTML')
-        
         processed.append(sid)
         if len(processed) > 500: processed.pop(0)
         
     with open(PROCESSED_FILE, 'w') as f: json.dump(processed, f)
 
-async def send_combined_daily_report():
-    """Consolidated 3 PM EST report: X Intelligence + Institutional Trends."""
-    today = datetime.now().strftime('%Y-%m-%d')
-    past_reports = get_last_week_reports()
-    
-    # 1. Check if we already sent a report today to prevent duplicates from GAS randomization
-    if past_reports and today in str(past_reports[0]): # This is a simple check, better logic below
-        print("⏭️ Daily report already sent today.")
-        return
-
-    # 2. Collect X Signals
-    signals = get_daily_x_signals()
-    x_summary = "No significant X activity today."
-    if signals:
-        raw_x_data = ""
-        ticker_groups = {}
-        for ticker, content, is_sweep, premium in signals:
-            if ticker not in ticker_groups: ticker_groups[ticker] = []
-            ticker_groups[ticker].append(premium)
-        for ticker, prems in ticker_groups.items():
-            raw_x_data += f"{ticker}: {len(prems)} alerts, Total Prem: ${sum(prems)/1e3:.0f}k\n"
-        
-        prompt_x = f"Summarize today's X options flow focusing on 'Repeat Flow' and @FL0WG0D highlights:\n{raw_x_data}"
-        try:
-            client = genai.Client(api_key=random.choice(GEMINI_API_KEYS))
-            res = client.models.generate_content(model='gemini-3-flash-preview', contents=prompt_x)
-            x_summary = res.text
-        except: pass
-
-    # 3. Collect Institutional Trends (>30 DTE)
-    trends = get_daily_trends()
-    trend_summary = "No long-term institutional positioning detected."
-    if trends:
-        raw_trend_data = "\n".join([f"{t}: {d}, ${p/1e6:.1f}M ({c} orders)" for t, d, p, c in trends])
-        prompt_trend = f"Summarize today's Smart Money Trends (>30 DTE):\n{raw_trend_data}\nPAST WEEK CONTEXT: {past_reports[:3]}"
-        try:
-            client = genai.Client(api_key=random.choice(GEMINI_API_KEYS))
-            res = client.models.generate_content(model='gemini-3-flash-preview', contents=prompt_trend)
-            trend_summary = res.text
-        except: pass
-
-    # 4. Dispatch Final Report
-    full_report = (f"🏛️ <b>PRE-CLOSE ALPHA REPORT</b>\n"
-                   f"<i>Timestamp: {today} | 1hr Before Close</i>\n"
-                   f"━━━━━━━━━━━━━━━━━\n\n"
-                   f"🐦 <b>X & ANALYST INTELLIGENCE</b>\n{x_summary}\n\n"
-                   f"🐋 <b>INSTITUTIONAL BATCH FLOW</b>\n{trend_summary}\n"
-                   f"━━━━━━━━━━━━━━━━━\n"
-                   f"<i>FlowGod Autopilot v2.6</i>")
-    
-    bot = Bot(token=TELEGRAM_TOKEN)
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=full_report, parse_mode='HTML')
-    log_report(f"SENT_{today}") # Mark as sent
-    clear_daily_flow()
-
 async def main():
     import sys
     if not TELEGRAM_TOKEN: return
     
-    # 1. Process standard signals (always run this to prevent skipping alerts)
+    # Process standard signals
     if os.path.exists('unusual_messages.json'):
         await process_scraped_messages()
-    else:
-        print("💡 No message file found. FlowGod is optimized for remote Autopilot execution.")
-
-    # 2. Handle Daily Report Flag (If triggered by Google Script / Workflow)
-    if "--report" in sys.argv:
-        hour = datetime.now().hour
-        # 20:00 UTC is 3:00 PM EST (1hr before close)
-        if hour == 20:
-            print("📢 Generating Consolidated Alpha Report...")
-            await send_combined_daily_report()
+    
+    # At 4 PM EST (21:00 UTC), send daily trends
+    if datetime.now().hour >= 21:
+        await send_daily_trends()
 
 if __name__ == "__main__":
     asyncio.run(main())

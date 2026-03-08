@@ -62,38 +62,7 @@ def init_db():
                 content TEXT
             )
         ''')
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS x_signals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ticker TEXT,
-                content TEXT,
-                timestamp TIMESTAMP,
-                is_sweep INTEGER DEFAULT 0,
-                premium REAL DEFAULT 0.0
-            )
-        ''')
         conn.commit()
-
-def log_x_signal(ticker, content, is_sweep, premium=0.0):
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO x_signals (ticker, content, timestamp, is_sweep, premium)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (ticker, content, datetime.now().isoformat(), 1 if is_sweep else 0, premium))
-        conn.commit()
-
-def get_daily_x_signals():
-    with sqlite3.connect(DB_NAME) as conn:
-        cursor = conn.cursor()
-        today = datetime.now().strftime('%Y-%m-%d')
-        cursor.execute('''
-            SELECT ticker, content, is_sweep, premium 
-            FROM x_signals 
-            WHERE timestamp LIKE ?
-            ORDER BY timestamp ASC
-        ''', (f'{today}%',))
-        return cursor.fetchall()
 
 def log_report(content):
     with sqlite3.connect(DB_NAME) as conn:
@@ -113,7 +82,6 @@ def clear_daily_flow():
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM long_term_flow')
-        cursor.execute('DELETE FROM x_signals')
         conn.commit()
 
 def log_long_term_flow(ticker, direction, strike, expiry, premium, vol_oi, otm, side):
