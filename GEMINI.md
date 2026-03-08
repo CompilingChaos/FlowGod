@@ -19,7 +19,8 @@ FlowGod is an institutional-grade algorithmic system that monitors high-convicti
 - **Persistence:** Local SQLite3 database (`flow_god.db`) tracks the full lifecycle of every trade, long-term institutional trends, and end-of-day intelligence reports.
 
 ### 4. Automated Operations
-- **GitHub Actions Runner:** Fully automated execution every 15 minutes during market hours (9:30 AM - 4:00 PM EST).
+- **External Orchestration:** Triggered via **Google Apps Script** (replacing internal cron) to provide randomized, human-like execution intervals during market hours (9:30 AM - 4:00 PM EST).
+- **GitHub Actions Worker:** Responds to repository dispatch events to execute the scraping and AI analysis pipeline.
 - **Daily Intelligence Reports:**
     - **Institutional Trends:** A summary of long-term (>30 DTE) "Smart Money" themes sent at market close.
 - **Session Persistence:** Integrated `session_manager.py` to maintain browser state and bypass anti-bot barriers.
