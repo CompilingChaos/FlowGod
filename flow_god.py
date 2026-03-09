@@ -169,12 +169,22 @@ def calculate_rsi(data, window=14):
 async def get_macro_context():
     try:
         spy = yf.Ticker("SPY")
-        hist = await asyncio.to_thread(spy.history, period="2d")
-        spy_ret = (hist['Close'].iloc[-1] / hist['Close'].iloc[-2] - 1) * 100
+        hist = await asyncio.to_thread(spy.history, period="5d") # Fetch more days to ensure we have data
         
+        spy_ret = 0
+        if len(hist) >= 2:
+            spy_ret = (hist['Close'].iloc[-1] / hist['Close'].iloc[-2] - 1) * 100
+        elif len(hist) == 1:
+            spy_ret = 0
+        else:
+            return "Macro data unavailable."
+
         qqq = yf.Ticker("QQQ")
-        hist_q = await asyncio.to_thread(qqq.history, period="2d")
-        qqq_ret = (hist_q['Close'].iloc[-1] / hist_q['Close'].iloc[-2] - 1) * 100
+        hist_q = await asyncio.to_thread(qqq.history, period="5d")
+        
+        qqq_ret = 0
+        if len(hist_q) >= 2:
+            qqq_ret = (hist_q['Close'].iloc[-1] / hist_q['Close'].iloc[-2] - 1) * 100
         
         return f"SPY: {spy_ret:+.2f}%, QQQ: {qqq_ret:+.2f}%"
     except Exception as e: 
