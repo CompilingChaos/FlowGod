@@ -15,28 +15,32 @@ TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 async def validate_trades():
     """Update ROI for all OPEN trades and close them if timeframe has passed."""
     print("📈 Starting Market Validation...")
+    
+    open_trades = []
     with sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        
-        # 1. Fetch all OPEN trades
         cursor.execute("SELECT * FROM trades WHERE status = 'OPEN'")
-        open_trades = cursor.fetchall()
-        
-        for trade in open_trades:
+        open_trades = [dict(row) for row in cursor.fetchall()]
+    
+    if not open_trades:
+        print("✅ No open trades to validate.")
+        return
+
+    semaphore = asyncio.Semaphore(5) # Process 5 tickers at a time
+
+    async def validate_single_trade(trade):
+        async with semaphore:
             ticker = trade['ticker']
             try:
-                # Helper for safe numeric conversion from DB
                 def safe_float(val, default=0.0):
                     try:
                         if val is None: return default
                         if isinstance(val, (int, float)): return float(val)
-                        # Remove non-numeric artifacts
                         clean = re.sub(r'[^\d\.]', '', str(val))
                         return float(clean) if clean else default
                     except: return default
 
-                # Robustly cast values from DB
                 entry_price = safe_float(trade['entry_price'])
                 option_entry = safe_float(trade['option_entry_price'])
                 leverage = safe_float(trade['leverage'], 5.0)
@@ -45,20 +49,18 @@ async def validate_trades():
                 timeframe_hours = safe_float(trade['timeframe_hours'], 24.0)
                 
                 tk = yf.Ticker(ticker)
-                # history() doesn't have a timeout, so we use asyncio.wait_for or just accept it's a synchronous call.
-                # Since this is a loop, we'll add a simple print to track progress.
-                print(f"📊 Validating {ticker}...")
-                hist = tk.history(period="1d")
+                print(f"📊 Fetching price for {ticker}...")
+                hist = await asyncio.wait_for(asyncio.to_thread(tk.history, period="1d"), timeout=20)
+                
                 if hist.empty:
                     print(f"⚠️ No price data for {ticker}")
-                    continue
-                    
+                    return
+
                 current_price = float(hist['Close'].iloc[-1])
-                
-                # Calculate P/L
+
                 if entry_price == 0:
                     print(f"⚠️ Skipping ROI calculation for {ticker}: Entry price is 0.")
-                    continue
+                    return
 
                 if "LONG" in direction or "CALL" in direction:
                     raw_pnl = (current_price - entry_price) / entry_price
@@ -73,28 +75,32 @@ async def validate_trades():
                 
                 is_expired = (datetime.now() - entry_time) > timedelta(hours=timeframe_hours)
                 
+                status = 'CLOSED' if is_expired else 'OPEN'
+                is_win = 1 if (is_expired and leveraged_pnl > 0) else 0
+                exit_reason = "Timeframe Expired" if is_expired else None
+                exit_time = datetime.now().isoformat() if is_expired else None
+
                 if is_expired:
-                    status = 'CLOSED'
-                    is_win = 1 if leveraged_pnl > 0 else 0
-                    exit_reason = "Timeframe Expired"
                     entry_info = f"OptEntry: ${option_entry}" if option_entry > 0 else f"StockEntry: ${entry_price}"
                     print(f"✅ Closing {ticker} ({entry_info}): {leveraged_pnl:.1f}% ROI")
-                else:
-                    status = 'OPEN'
-                    is_win = 0
-                    exit_reason = None
 
-                cursor.execute('''
-                    UPDATE trades 
-                    SET pnl = ?, is_win = ?, status = ?, exit_time = ?, exit_reason = ?, peak_pnl = ?
-                    WHERE id = ?
-                ''', (leveraged_pnl, is_win, status, datetime.now().isoformat() if is_expired else None, 
-                      exit_reason, peak_pnl, trade['id']))
+                # Update database
+                with sqlite3.connect(DB_NAME) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        UPDATE trades 
+                        SET pnl = ?, is_win = ?, status = ?, exit_time = ?, exit_reason = ?, peak_pnl = ?
+                        WHERE id = ?
+                    ''', (leveraged_pnl, is_win, status, exit_time, exit_reason, peak_pnl, trade['id']))
+                    conn.commit()
                 
+            except asyncio.TimeoutError:
+                print(f"⌛ Timeout validating {ticker}")
             except Exception as e:
                 print(f"⚠️ Failed to validate {ticker}: {e}")
 
-        conn.commit()
+    tasks = [validate_single_trade(t) for t in open_trades]
+    await asyncio.gather(*tasks)
 
 async def send_performance_leaderboard():
     """Summarize recent performance and send to Telegram."""
@@ -102,7 +108,6 @@ async def send_performance_leaderboard():
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
-        # Last 7 days stats
         seven_days_ago = (datetime.now() - timedelta(days=7)).isoformat()
         cursor.execute('''
             SELECT ticker, pnl, is_win, direction 
@@ -133,9 +138,10 @@ async def send_performance_leaderboard():
         bot = Bot(token=TELEGRAM_TOKEN)
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg, parse_mode='HTML')
 
-if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(validate_trades())
+async def main():
+    await validate_trades()
     if datetime.now().hour >= 21:
-        loop.run_until_complete(send_performance_leaderboard())
+        await send_performance_leaderboard()
+
+if __name__ == "__main__":
+    asyncio.run(main())

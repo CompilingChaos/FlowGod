@@ -40,6 +40,8 @@ async def scrape_discord():
             viewport={'width': 1280, 'height': 4000}
         )
         page = await context.new_page()
+        page.set_default_navigation_timeout(60000) # 60s
+        page.set_default_timeout(60000) # 60s
         
         # Apply stealth plugins
         try:
@@ -50,11 +52,15 @@ async def scrape_discord():
             print(f"⚠️ Warning: Stealth application failed. {e}")
         
         print(f"🚀 Navigating to {DISCORD_URL}...")
-        await page.goto(DISCORD_URL)
+        try:
+            await page.goto(DISCORD_URL, wait_until="domcontentloaded", timeout=90000)
+        except Exception as e:
+            print(f"❌ Failed to load Discord: {e}")
+            await browser.close()
+            return []
         
         # 2. Variable Load Wait
-        await page.wait_for_load_state("domcontentloaded")
-        await asyncio.sleep(random.uniform(3, 8))
+        await asyncio.sleep(random.uniform(5, 10))
         
         # 3. Simulate human-like mouse movement (wobbling)
         for _ in range(random.randint(3, 7)):
@@ -64,8 +70,9 @@ async def scrape_discord():
 
         # Wait for the message container
         try:
-            await page.wait_for_selector('li[class*="messageListItem"]', timeout=45000)
+            await page.wait_for_selector('li[class*="messageListItem"]', timeout=60000)
         except Exception:
+            print("❌ Message list item not found.")
             await page.screenshot(path="debug_discord.png")
             await browser.close()
             return []
@@ -79,7 +86,6 @@ async def scrape_discord():
 
         messages_to_process = []
         # Max 50 messages: This stays within the initial 'burst' Discord sends to the client
-        # Reading beyond 50 would require scrolling, triggering risky server requests.
         for item in reversed(message_items[-60:]): # Look at 60 items to ensure we get 50 valid ones
             raw_text = item.get_text(separator=" ").strip()
             # Clean noise
@@ -102,7 +108,7 @@ async def scrape_discord():
         print(f"✅ Scraped {len(messages_to_process)} raw message units.")
         
         # 6. Linger Exit
-        linger_time = random.randint(10, 25)
+        linger_time = random.randint(10, 20)
         print(f"🧘 Lingering for {linger_time}s before closing browser...")
         await asyncio.sleep(linger_time)
         

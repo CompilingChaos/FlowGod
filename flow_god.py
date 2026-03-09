@@ -148,10 +148,12 @@ async def send_daily_trends():
     for key in keys:
         try:
             client = genai.Client(api_key=key)
-            response = client.models.generate_content(model='gemini-3-flash-preview', contents=prompt)
+            response = await asyncio.to_thread(client.models.generate_content, model='gemini-3-flash-preview', contents=prompt)
             summary = response.text
             break
-        except: continue
+        except Exception as e:
+            print(f"⚠️ Daily trend AI summary failed: {e}")
+            continue
     log_report(summary)
     bot = Bot(token=TELEGRAM_TOKEN)
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"📊 <b>END-OF-DAY SMART MONEY & PERFORMANCE INTELLIGENCE</b>\n\n{summary}", parse_mode='HTML')
@@ -166,12 +168,18 @@ def calculate_rsi(data, window=14):
 
 async def get_macro_context():
     try:
-        spy = yf.Ticker("SPY").history(period="2d")
-        qqq = yf.Ticker("QQQ").history(period="2d")
-        spy_ret = (spy['Close'].iloc[-1] / spy['Close'].iloc[-2] - 1) * 100
-        qqq_ret = (qqq['Close'].iloc[-1] / qqq['Close'].iloc[-2] - 1) * 100
+        spy = yf.Ticker("SPY")
+        hist = await asyncio.to_thread(spy.history, period="2d")
+        spy_ret = (hist['Close'].iloc[-1] / hist['Close'].iloc[-2] - 1) * 100
+        
+        qqq = yf.Ticker("QQQ")
+        hist_q = await asyncio.to_thread(qqq.history, period="2d")
+        qqq_ret = (hist_q['Close'].iloc[-1] / hist_q['Close'].iloc[-2] - 1) * 100
+        
         return f"SPY: {spy_ret:+.2f}%, QQQ: {qqq_ret:+.2f}%"
-    except: return "Macro data unavailable."
+    except Exception as e: 
+        print(f"⚠️ Macro context failed: {e}")
+        return "Macro data unavailable."
 
 async def analyze_with_ai_retry(trade_content, news_context, stats, market_data, daily_context):
     keys = list(GEMINI_API_KEYS)
@@ -192,7 +200,7 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data,
     for key in keys:
         try:
             client = genai.Client(api_key=key)
-            response = client.models.generate_content(
+            response = await asyncio.to_thread(client.models.generate_content,
                 model='gemini-3-flash-preview',
                 contents=prompt,
                 config=types.GenerateContentConfig(response_mime_type='application/json')
@@ -200,21 +208,24 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data,
             data = json.loads(response.text)
             return data[0] if isinstance(data, list) else data
         except Exception as e:
+            print(f"⚠️ AI analysis failed with key {key[:5]}...: {e}")
             await asyncio.sleep(2)
     return None
 
-def fetch_news(ticker, query_type="general"):
+def _sync_fetch_news(ticker, query_type="general"):
+    """Sync news search for use in to_thread."""
+    yesterday = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
+    query = f'site:sec.gov "{ticker}" ("Form 4" OR "13D" OR "13G") after:{yesterday}' if query_type == "sec" else f"{ticker} stock news insider catalyst after:{yesterday}"
+    return list(search(query, num_results=3, lang="en"))
+
+async def fetch_news(ticker, query_type="general"):
     """Fetch news with a strict internal timeout to prevent hanging."""
     try:
-        yesterday = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
-        query = f'site:sec.gov "{ticker}" ("Form 4" OR "13D" OR "13G") after:{yesterday}' if query_type == "sec" else f"{ticker} stock news insider catalyst after:{yesterday}"
-        
-        # googlesearch-python doesn't have an internal timeout, so we just limit the results strictly
         print(f"🔍 Searching news for {ticker} ({query_type})...")
-        results = list(search(query, num_results=3, lang="en"))
+        results = await asyncio.wait_for(asyncio.to_thread(_sync_fetch_news, ticker, query_type), timeout=30)
         return "\n".join(results)
     except Exception as e:
-        print(f"⚠️ News search failed for {ticker}: {e}")
+        print(f"⚠️ News search failed for {ticker} ({query_type}): {e}")
         return "No recent data found."
 
 def get_stable_id(ticker, strike, expiry, side, reported_time):
@@ -271,12 +282,23 @@ async def perform_full_analysis(trade_info, msg_time=None):
     market_data = "Scanning for data..."
     
     try:
-        tk = yf.Ticker(ticker); hist_full = tk.history(period="1y"); entry_price = round(hist_full['Close'].iloc[-1], 2); mkt_cap = (tk.info.get('marketCap') or tk.info.get('totalAssets', 0)) if tk.info else 0
-        sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2); rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2); macro = await get_macro_context()
+        tk = yf.Ticker(ticker)
+        print(f"📊 Fetching history for {ticker}...")
+        hist_full = await asyncio.wait_for(asyncio.to_thread(tk.history, period="1y"), timeout=20)
+        entry_price = round(hist_full['Close'].iloc[-1], 2)
+        
+        print(f"📊 Fetching info for {ticker}...")
+        info = await asyncio.wait_for(asyncio.to_thread(lambda: tk.info), timeout=20)
+        mkt_cap = (info.get('marketCap') or info.get('totalAssets', 0)) if info else 0
+        
+        sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2)
+        rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2)
+        macro = await get_macro_context()
         
         # 2. Market Cap Relative Filtering
         threshold = get_mkt_cap_threshold(mkt_cap)
         if premium_usd > 0 and premium_usd < threshold:
+            print(f"⏭️ {ticker} filtered by market cap threshold (${threshold/1e3:.0f}k)")
             return "FILTERED_BY_CAP", ticker, None, 0, stable_id
 
         golden_sweep_context = f"UNUSUALLY HIGH VOL/OI ({vol_oi}x)" if vol_oi > 2.0 else "Standard liquidity"
@@ -285,10 +307,16 @@ async def perform_full_analysis(trade_info, msg_time=None):
                       f"Context: {multi_pct}% Multi-leg | Vol/OI: {vol_oi} ({golden_sweep_context})\n"
                       f"Metrics: RSI={rsi}, 50SMA=${sma50} | Macro: {macro}")
     except Exception as e:
+        print(f"⚠️ Market data fetch failed for {ticker}: {e}")
         if premium_usd > 0 and premium_usd < 100000: return None, ticker, None, 0, stable_id
         market_data = "Data fetch partially failed."
 
-    news = fetch_news(ticker); sec = fetch_news(ticker, query_type="sec"); stats = get_performance_stats()
+    # Parallelize news fetching
+    news_task = fetch_news(ticker)
+    sec_task = fetch_news(ticker, query_type="sec")
+    news, sec = await asyncio.gather(news_task, sec_task)
+    
+    stats = get_performance_stats()
     d_stats = get_ticker_daily_stats(ticker)
     daily_context = f"This day there have been {d_stats['CALL']['count']} call alerts with a total premium of ${d_stats['CALL']['prem']/1e3:.0f}k and {d_stats['PUT']['count']} puts with a premium of ${d_stats['PUT']['prem']/1e3:.0f}k."
     
@@ -297,6 +325,7 @@ async def perform_full_analysis(trade_info, msg_time=None):
         log_long_term_flow(ticker, option_type, strike_val, expiry_val, premium_usd, vol_oi, 0, side)
         return "STORED", ticker, None, 0, stable_id
 
+    print(f"🧠 Running AI analysis for {ticker}...")
     data = await analyze_with_ai_retry(trade_info, news + "\n" + sec, stats, market_data, daily_context)
     
     if not data:
@@ -322,17 +351,17 @@ async def perform_full_analysis(trade_info, msg_time=None):
     # 3. Strategic Calibration
     if side == "Bid" and option_type == "Puts":
         data['direction'] = "LONG"
-        data['analysis'] = "<b>[BID SIDE PUTS]</b> Bullish premium selling. " + data['analysis']
+        data['analysis'] = "<b>[BID SIDE PUTS]</b> Bullish premium selling. " + (data.get('analysis') or "")
     elif side == "Bid" and option_type == "Calls":
         data['direction'] = "SHORT"
-        data['analysis'] = "<b>[BID SIDE CALLS]</b> Bearish premium selling. " + data['analysis']
+        data['analysis'] = "<b>[BID SIDE CALLS]</b> Bearish premium selling. " + (data.get('analysis') or "")
     
     if ask_pct >= 70 and multi_pct == 0:
         conviction = min(10, conviction + 2)
-        data['analysis'] = "🔥 <b>HIGH URGENCY:</b> Naked ask-side aggression. " + data['analysis']
+        data['analysis'] = "🔥 <b>HIGH URGENCY:</b> Naked ask-side aggression. " + (data.get('analysis') or "")
 
     if entry_price > 0:
-        log_trade(ticker, data['direction'], leverage, timeframe, conviction, entry_price, target, stop, iv_rank, premium_usd, option_entry)
+        log_trade(ticker, data.get('direction', 'LONG'), leverage, timeframe, conviction, entry_price, target, stop, iv_rank, premium_usd, option_entry)
     
     # Update data dict for format_telegram_msg consistency
     data['insider_conviction'] = conviction
@@ -356,8 +385,8 @@ def clean_html(text):
 
 def format_telegram_msg(ticker, data, stats, label="SIGNAL"):
     # 1. Determine the 'Vibe' of the trade
-    is_insider = data['is_insider']
-    analysis_text = data['analysis']
+    is_insider = data.get('is_insider')
+    analysis_text = data.get('analysis', "No analysis available.")
     
     header_tag = "🚨 <b>INSIDER ALERT</b>" if is_insider else "📊 <b>STANDARD FLOW</b>"
     
@@ -366,18 +395,18 @@ def format_telegram_msg(ticker, data, stats, label="SIGNAL"):
         header_tag = "🛡️ <b>LONG-TERM IDEA / FLOOR SUPPORT</b>"
     
     golden_tag = "🏆 <b>GOLDEN SWEEP DETECTED</b>\n" if data.get('is_golden_sweep') else ""
-    iv_msg = "HIGH IV RISK" if data['iv_warning'] is True else data['iv_warning']
-    iv_box = f"⚠️ <b>{iv_msg}</b>\n━━━━━━━━━━━━━━━━━\n" if data['iv_warning'] else ""
+    iv_msg = "HIGH IV RISK" if data.get('iv_warning') is True else data.get('iv_warning')
+    iv_box = f"⚠️ <b>{iv_msg}</b>\n━━━━━━━━━━━━━━━━━\n" if data.get('iv_warning') else ""
     
     clean_analysis = clean_html(analysis_text)
     premium_str = f"${data.get('premium', 0):,.0f}" if isinstance(data.get('premium'), (int, float)) else str(data.get('premium'))
 
     return (f"<b>FLOWGOD: {ticker}</b>\n{header_tag}\n{golden_tag}━━━━━━━━━━━━━━━━━\n{iv_box}"
-            f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n"
+            f"🔥 <b>Conviction:</b> {data.get('insider_conviction')}/10\n"
             f"💰 <b>Premium:</b> <code>{premium_str}</code>\n"
             f"📈 <b>Buy in:</b> <code>${data.get('entry_price', 0)}</code>\n"
-            f"📊 <b>Action:</b> <code>{data['direction']}</code>\n"
-            f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n"
+            f"📊 <b>Action:</b> <code>{data.get('direction')}</code>\n"
+            f"🎯 <b>Target:</b> <code>${data.get('target_price')}</code>\n"
             f"⏳ <b>Timeframe:</b> <code>{data.get('timeframe_text', 'N/A')}</code>\n"
             f"🧐 <b>ANALYSIS:</b> <i>{clean_analysis}</i>")
 
@@ -418,11 +447,11 @@ async def process_scraped_messages():
             if sid in processed: return
             print(f"🔮 Analyzing signal for {sid[:8]}...")
             try:
-                # Use a global timeout of 90s per signal analysis
-                res = await asyncio.wait_for(perform_full_analysis(signal['content']), timeout=90)
+                # Use a global timeout of 120s per signal analysis
+                res = await asyncio.wait_for(perform_full_analysis(signal['content']), timeout=120)
                 data, ticker, stats, entry_price, stable_id = res
                 
-                if data and data not in ["STORED", "FILTERED_BY_CAP"] and data['insider_conviction'] >= 6:        
+                if data and data not in ["STORED", "FILTERED_BY_CAP"] and data.get('insider_conviction', 0) >= 6:        
                     bot = Bot(token=TELEGRAM_TOKEN)
                     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=format_telegram_msg(ticker, data, stats), parse_mode='HTML')
                     print(f"✅ Signal sent for {ticker}")
@@ -439,7 +468,6 @@ async def process_scraped_messages():
     with open(PROCESSED_FILE, 'w') as f: json.dump(processed, f)
 
 async def main():
-    import sys
     if not TELEGRAM_TOKEN: return
     
     # Process standard signals
@@ -448,6 +476,7 @@ async def main():
     
     # At 4 PM EST (21:00 UTC), send daily trends
     if datetime.now().hour >= 21:
+        print("🕒 EOD window detected. Compiling daily trends...")
         await send_daily_trends()
 
 if __name__ == "__main__":
