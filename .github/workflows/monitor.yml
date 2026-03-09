@@ -59,4 +59,5 @@ jobs:
           git config --global user.email "flowgod@bot.com"
           git add processed_messages.json flow_god.db
           git commit -m "Update state and performance database [skip ci]" || echo "No changes to commit"
+          git pull --rebase origin main
           git push
