@@ -511,7 +511,7 @@ async def main():
     if not TELEGRAM_TOKEN: return
     if os.path.exists('unusual_messages.json'):
         await process_scraped_messages()
-    if datetime.now().hour >= 21:
+    if datetime.now().hour >= 20:
         print("🕒 EOD window detected. Compiling daily trends...")
         await send_daily_trends()
 

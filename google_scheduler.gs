@@ -22,8 +22,8 @@ function triggerFlowGod() {
   // New Trigger: Every Market Day after Close (4:30 PM EST)
   const isAfterCloseDaily = (!isWeekend && hour === 16 && minute >= 30);
   
-  // Specific trigger for End-of-Day Report at 4:35 PM EST
-  const isEODReportTime = (!isWeekend && hour === 16 && minute >= 35 && minute < 40);
+  // Specific trigger for End-of-Day Report at 4:05 PM EST
+  const isEODReportTime = (!isWeekend && hour === 16 && minute >= 5 && minute < 10);
 
   // 2. Logic: What should we trigger?
   
