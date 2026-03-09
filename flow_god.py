@@ -338,10 +338,11 @@ async def perform_full_analysis(trade_info, msg_time=None):
     data['insider_conviction'] = conviction
     data['leverage'] = leverage
     data['timeframe_hours'] = timeframe
-    data['timeframe_text'] = data.get('timeframe_text', 'N/A')
+    data['timeframe_text'] = timeframe_txt
     data['target_price'] = target
     data['stop_loss'] = stop
     data['premium'] = premium_usd
+    data['entry_price'] = entry_price
     
     return data, ticker, stats, entry_price, stable_id
 
@@ -374,8 +375,11 @@ def format_telegram_msg(ticker, data, stats, label="SIGNAL"):
     return (f"<b>FLOWGOD: {ticker}</b>\n{header_tag}\n{golden_tag}━━━━━━━━━━━━━━━━━\n{iv_box}"
             f"🔥 <b>Conviction:</b> {data['insider_conviction']}/10\n"
             f"💰 <b>Premium:</b> <code>{premium_str}</code>\n"
+            f"📈 <b>Buy in:</b> <code>${data.get('entry_price', 0)}</code>\n"
             f"📊 <b>Action:</b> <code>{data['direction']}</code>\n"
-            f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n🧐 <b>ANALYSIS:</b> <i>{clean_analysis}</i>")
+            f"🎯 <b>Target:</b> <code>${data['target_price']}</code>\n"
+            f"⏳ <b>Timeframe:</b> <code>{data.get('timeframe_text', 'N/A')}</code>\n"
+            f"🧐 <b>ANALYSIS:</b> <i>{clean_analysis}</i>")
 
 async def process_scraped_messages():
     if not os.path.exists('unusual_messages.json'): return
