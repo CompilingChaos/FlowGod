@@ -14,6 +14,7 @@ import time
 from datetime import datetime, timedelta
 import re
 import hashlib
+import pandas as pd
 from database import init_db, log_trade, get_performance_stats, log_long_term_flow, get_daily_trends, log_report, get_last_week_reports, clear_daily_flow, get_ticker_daily_stats, get_daily_trades, get_daily_performance_stats
 
 load_dotenv()
@@ -73,17 +74,18 @@ def is_long_term(expiry_str):
         except:
             return False
 
-def calculate_iv_rank(ticker):
+def calculate_iv_rank_from_history(hist):
     """Approximate IV Rank using historical price volatility as a proxy."""
     try:
-        tk = yf.Ticker(ticker)
-        hist = tk.history(period="1y")
-        if hist.empty: return 0
-        hist['returns'] = hist['Close'].pct_change()
-        hist['vol'] = hist['returns'].rolling(window=30).std() * (252**0.5)
-        current_vol = hist['vol'].iloc[-1]
-        min_vol = hist['vol'].min()
-        max_vol = hist['vol'].max()
+        if hist is None or hist.empty: return 0
+        df = hist.copy()
+        if 'Close' not in df.columns: return 0
+        df['returns'] = df['Close'].pct_change()
+        df['vol'] = df['returns'].rolling(window=30).std() * (252**0.5)
+        current_vol = df['vol'].iloc[-1]
+        min_vol = df['vol'].min()
+        max_vol = df['vol'].max()
+        if pd.isna(current_vol) or pd.isna(min_vol) or pd.isna(max_vol): return 0
         if max_vol == min_vol: return 50
         iv_rank = ((current_vol - min_vol) / (max_vol - min_vol)) * 100
         return round(iv_rank, 2)
@@ -169,7 +171,7 @@ def calculate_rsi(data, window=14):
 async def get_macro_context():
     try:
         spy = yf.Ticker("SPY")
-        hist = await asyncio.to_thread(spy.history, period="5d") # Fetch more days to ensure we have data
+        hist = await asyncio.to_thread(spy.history, period="5d")
         
         spy_ret = 0
         if len(hist) >= 2:
@@ -245,18 +247,52 @@ def get_stable_id(ticker, strike, expiry, side, reported_time):
 
 def get_mkt_cap_threshold(mkt_cap):
     """Sliding scale for premium floor based on ticker size."""
-    # Convert to Billions for easy comparison
     cap_b = mkt_cap / 1e9
     if cap_b < 10: return 100000      # Small Cap: $100k
     if cap_b < 50: return 300000      # Mid Cap: $300k
     if cap_b < 200: return 500000     # Large Cap: $500k
-    return 2000000                    # Mega Cap (NVDA, MSFT, etc): $2M
+    return 2000000                    # Mega Cap: $2M
 
-async def perform_full_analysis(trade_info, msg_time=None):
+async def get_batch_market_data(tickers):
+    if not tickers: return {}, {}
+    
+    print(f"📡 Batch pre-fetching data for {len(tickers)} tickers...")
+    try:
+        # 1. Batch History
+        batch_hist_df = await asyncio.to_thread(yf.download, tickers=list(tickers), period="1y", group_by='ticker', threads=True, progress=False)
+        
+        # Consistent dictionary of DataFrames
+        ticker_histories = {}
+        if len(tickers) > 1:
+            for t in tickers:
+                ticker_histories[t] = batch_hist_df[t]
+        else:
+            ticker = list(tickers)[0]
+            ticker_histories[ticker] = batch_hist_df
+
+        # 2. Batch Info (fast_info)
+        tks = yf.Tickers(list(tickers))
+        batch_info = {}
+        for t in tickers:
+            try:
+                info = tks.tickers[t].fast_info
+                batch_info[t] = {
+                    "marketCap": info.get('marketCap', 0),
+                    "fiftyDayAverage": info.get('fiftyDayAverage', 0),
+                    "lastPrice": info.get('lastPrice', 0)
+                }
+            except:
+                batch_info[t] = {"marketCap": 0, "fiftyDayAverage": 0, "lastPrice": 0}
+                
+        return ticker_histories, batch_info
+    except Exception as e:
+        print(f"⚠️ Batch fetch failed: {e}")
+        return {}, {}
+
+async def perform_full_analysis(trade_info, pre_hist=None, pre_info=None, pre_macro=None):
     """Core analysis logic reusable for Discord or Telegram."""
     clean_info = str(trade_info).replace("🔥", "").replace("🚨", "").strip()
     
-    # 1. Flexible Multi-line Extraction
     ts_match = re.search(r'([A-Z]{1,5})\s+([\d\.]+)\s+([CP])\s+([\d\/]{8,10})', clean_info, re.DOTALL)
     side_match = re.search(r'(Ask|Bid|Mid)\s+Side', clean_info, re.I)
     ba_match = re.search(r'Bid/Ask %:\s*(\d+)/(\d+)', clean_info)
@@ -287,41 +323,36 @@ async def perform_full_analysis(trade_info, msg_time=None):
 
     stable_id = get_stable_id(ticker, strike_val, expiry_val, side, time_str)
 
-    iv_rank = calculate_iv_rank(ticker)
+    iv_rank = calculate_iv_rank_from_history(pre_hist)
     entry_price = 0
     market_data = "Scanning for data..."
     
     try:
-        tk = yf.Ticker(ticker)
-        print(f"📊 Fetching history for {ticker}...")
-        hist_full = await asyncio.wait_for(asyncio.to_thread(tk.history, period="1y"), timeout=20)
-        entry_price = round(hist_full['Close'].iloc[-1], 2)
-        
-        print(f"📊 Fetching info for {ticker}...")
-        info = await asyncio.wait_for(asyncio.to_thread(lambda: tk.info), timeout=20)
-        mkt_cap = (info.get('marketCap') or info.get('totalAssets', 0)) if info else 0
-        
-        sma50 = round(hist_full['Close'].rolling(50).mean().iloc[-1], 2)
-        rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2)
-        macro = await get_macro_context()
-        
-        # 2. Market Cap Relative Filtering
-        threshold = get_mkt_cap_threshold(mkt_cap)
-        if premium_usd > 0 and premium_usd < threshold:
-            print(f"⏭️ {ticker} filtered by market cap threshold (${threshold/1e3:.0f}k)")
-            return "FILTERED_BY_CAP", ticker, None, 0, stable_id
+        hist_full = pre_hist
+        if hist_full is not None and not hist_full.empty:
+            entry_price = round(hist_full['Close'].iloc[-1], 2)
+            mkt_cap = pre_info.get('marketCap', 0) if pre_info else 0
+            sma50 = pre_info.get('fiftyDayAverage', 0) if pre_info else round(hist_full['Close'].rolling(50).mean().iloc[-1], 2)
+            rsi = round(calculate_rsi(hist_full['Close']).iloc[-1], 2)
+            macro = pre_macro or await get_macro_context()
+            
+            threshold = get_mkt_cap_threshold(mkt_cap)
+            if premium_usd > 0 and premium_usd < threshold:
+                print(f"⏭️ {ticker} filtered by market cap threshold (${threshold/1e3:.0f}k)")
+                return "FILTERED_BY_CAP", ticker, None, 0, stable_id
 
-        golden_sweep_context = f"UNUSUALLY HIGH VOL/OI ({vol_oi}x)" if vol_oi > 2.0 else "Standard liquidity"
-        market_data = (f"Ticker: {ticker} @ ${entry_price} | Size: {mkt_cap/1e9:.1f}B | IV Rank: {iv_rank}%\n"
-                      f"Option: {strike_val} {option_type} Exp {expiry_val} | Side: {side} (Aggression: {ask_pct}% Ask)\n"
-                      f"Context: {multi_pct}% Multi-leg | Vol/OI: {vol_oi} ({golden_sweep_context})\n"
-                      f"Metrics: RSI={rsi}, 50SMA=${sma50} | Macro: {macro}")
+            golden_sweep_context = f"UNUSUALLY HIGH VOL/OI ({vol_oi}x)" if vol_oi > 2.0 else "Standard liquidity"
+            market_data = (f"Ticker: {ticker} @ ${entry_price} | Size: {mkt_cap/1e9:.1f}B | IV Rank: {iv_rank}%\n"
+                          f"Option: {strike_val} {option_type} Exp {expiry_val} | Side: {side} (Aggression: {ask_pct}% Ask)\n"
+                          f"Context: {multi_pct}% Multi-leg | Vol/OI: {vol_oi} ({golden_sweep_context})\n"
+                          f"Metrics: RSI={rsi}, 50SMA=${sma50} | Macro: {macro}")
+        else:
+            market_data = "No historical data available for analysis."
     except Exception as e:
-        print(f"⚠️ Market data fetch failed for {ticker}: {e}")
+        print(f"⚠️ Market data processing failed for {ticker}: {e}")
         if premium_usd > 0 and premium_usd < 100000: return None, ticker, None, 0, stable_id
-        market_data = "Data fetch partially failed."
+        market_data = "Data processing partially failed."
 
-    # Parallelize news fetching
     news_task = fetch_news(ticker)
     sec_task = fetch_news(ticker, query_type="sec")
     news, sec = await asyncio.gather(news_task, sec_task)
@@ -330,7 +361,6 @@ async def perform_full_analysis(trade_info, msg_time=None):
     d_stats = get_ticker_daily_stats(ticker)
     daily_context = f"This day there have been {d_stats['CALL']['count']} call alerts with a total premium of ${d_stats['CALL']['prem']/1e3:.0f}k and {d_stats['PUT']['count']} puts with a premium of ${d_stats['PUT']['prem']/1e3:.0f}k."
     
-    # --- RESTORED: Long-term flow logging for Daily Trends ---
     if is_long_term(expiry_val):
         log_long_term_flow(ticker, option_type, strike_val, expiry_val, premium_usd, vol_oi, 0, side)
         return "STORED", ticker, None, 0, stable_id
@@ -341,12 +371,9 @@ async def perform_full_analysis(trade_info, msg_time=None):
     if not data:
         return None, ticker, stats, entry_price, stable_id
 
-    # --- ROBUST NUMERIC PARSING ---
-    # Ensure AI-returned strings are converted to numbers before DB logging
     def safe_num(val, default=0):
         try:
             if isinstance(val, (int, float)): return val
-            # Remove non-numeric artifacts like 'x' or ' (OTM)'
             clean_val = re.sub(r'[^\d\.]', '', str(val))
             return float(clean_val) if clean_val else default
         except: return default
@@ -358,7 +385,6 @@ async def perform_full_analysis(trade_info, msg_time=None):
     stop = safe_num(data.get('stop_loss'), 0)
     conviction = int(safe_num(data.get('insider_conviction'), 7))
 
-    # 3. Strategic Calibration
     if side == "Bid" and option_type == "Puts":
         data['direction'] = "LONG"
         data['analysis'] = "<b>[BID SIDE PUTS]</b> Bullish premium selling. " + (data.get('analysis') or "")
@@ -373,7 +399,6 @@ async def perform_full_analysis(trade_info, msg_time=None):
     if entry_price > 0:
         log_trade(ticker, data.get('direction', 'LONG'), leverage, timeframe, conviction, entry_price, target, stop, iv_rank, premium_usd, option_entry)
     
-    # Update data dict for format_telegram_msg consistency
     data['insider_conviction'] = conviction
     data['leverage'] = leverage
     data['timeframe_hours'] = timeframe
@@ -386,21 +411,15 @@ async def perform_full_analysis(trade_info, msg_time=None):
     return data, ticker, stats, entry_price, stable_id
 
 def clean_html(text):
-    """Sanitize HTML for Telegram: replace <br> with newlines and remove unsupported tags."""
+    """Sanitize HTML for Telegram."""
     if not text: return ""
-    # Replace <br>, <br/>, <br /> with \n
     text = re.sub(r'<br\s*/?>', '\n', text, flags=re.I)
-    # Ensure only Telegram-supported tags remain (basic b, i, code, u, s)
     return text
 
 def format_telegram_msg(ticker, data, stats, label="SIGNAL"):
-    # 1. Determine the 'Vibe' of the trade
     is_insider = data.get('is_insider')
     analysis_text = data.get('analysis', "No analysis available.")
-    
     header_tag = "🚨 <b>INSIDER ALERT</b>" if is_insider else "📊 <b>STANDARD FLOW</b>"
-    
-    # 2. Add 'Longterm Idea' branding for Floor Support trades
     if "[BID SIDE PUTS]" in analysis_text or "[BID SIDE CALLS]" in analysis_text:
         header_tag = "🛡️ <b>LONG-TERM IDEA / FLOOR SUPPORT</b>"
     
@@ -424,54 +443,65 @@ async def process_scraped_messages():
     if not os.path.exists('unusual_messages.json'): return
     with open('unusual_messages.json', 'r') as f: scraped = json.load(f)
     
-    # 4. Parent-Child Deduplication
     unique_signals = {}
     for msg in scraped:
         content = msg['content']
         prem_match = re.search(r'Prem(?:ium)?:\s*\$([\d\.,]+[KMB]?)', content, re.I)
         premium = parse_premium(prem_match.group(1) if prem_match else "0")
         is_hot = "🔥" in content or "Hot Contract" in content
-        
         ts_match = re.search(r'([A-Z]{1,5})\s+([\d\.]+)\s+([CP])\s+([\d\/]{8,10})', content, re.DOTALL)
         side_match = re.search(r'(Ask|Bid|Mid)\s+Side', content, re.I)
         if not ts_match: continue
-        
         ticker = ts_match.group(1).upper()
         strike = ts_match.group(2); expiry = ts_match.group(4); side = side_match.group(1).capitalize() if side_match else "Unknown"
         time_id = normalize_reported_time(content)
-        
         sid = get_stable_id(ticker, strike, expiry, side, time_id)
         if sid not in unique_signals or (is_hot and not unique_signals[sid]['is_hot']) or (premium > unique_signals[sid]['premium'] * 1.1):
-            unique_signals[sid] = {"content": content, "premium": premium, "is_hot": is_hot}
+            unique_signals[sid] = {"content": content, "premium": premium, "is_hot": is_hot, "ticker": ticker}
 
     processed = []
     if os.path.exists(PROCESSED_FILE):
         with open(PROCESSED_FILE, 'r') as f: processed = json.load(f)
     
-    print(f"📦 Processing {len(unique_signals)} unique signals...")
-    
-    semaphore = asyncio.Semaphore(3) # Process 3 at a time to avoid rate limits
+    new_signals = {sid: sig for sid, sig in unique_signals.items() if sid not in processed}
+    if not new_signals:
+        print("✅ No new signals to process.")
+        return
+
+    # Batch Fetch
+    tickers_to_fetch = {sig['ticker'] for sig in new_signals.values()}
+    batch_hist, batch_info = await get_batch_market_data(tickers_to_fetch)
+    macro_context = await get_macro_context()
+
+    print(f"📦 Processing {len(new_signals)} new signals...")
+    semaphore = asyncio.Semaphore(3)
 
     async def analyze_and_send(sid, signal):
         async with semaphore:
-            if sid in processed: return
-            print(f"🔮 Analyzing signal for {sid[:8]}...")
+            print(f"🔮 Analyzing signal for {signal['ticker']} ({sid[:8]})...")
+            ticker = signal['ticker']
             try:
-                # Use a global timeout of 120s per signal analysis
-                res = await asyncio.wait_for(perform_full_analysis(signal['content']), timeout=120)
+                res = await asyncio.wait_for(
+                    perform_full_analysis(
+                        signal['content'], 
+                        pre_hist=batch_hist.get(ticker), 
+                        pre_info=batch_info.get(ticker),
+                        pre_macro=macro_context
+                    ), 
+                    timeout=120
+                )
                 data, ticker, stats, entry_price, stable_id = res
-                
                 if data and data not in ["STORED", "FILTERED_BY_CAP"] and data.get('insider_conviction', 0) >= 6:        
                     bot = Bot(token=TELEGRAM_TOKEN)
                     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=format_telegram_msg(ticker, data, stats), parse_mode='HTML')
                     print(f"✅ Signal sent for {ticker}")
                 processed.append(sid)
             except asyncio.TimeoutError:
-                print(f"⌛ Timeout analyzing signal for {sid[:8]}")
+                print(f"⌛ Timeout analyzing signal for {ticker}")
             except Exception as e:
-                print(f"❌ Error analyzing signal for {sid[:8]}: {e}")
+                print(f"❌ Error analyzing signal for {ticker}: {e}")
 
-    tasks = [analyze_and_send(sid, signal) for sid, signal in unique_signals.items()]
+    tasks = [analyze_and_send(sid, sig) for sid, sig in new_signals.items()]
     await asyncio.gather(*tasks)
 
     if len(processed) > 500: processed = processed[-500:]
@@ -479,12 +509,8 @@ async def process_scraped_messages():
 
 async def main():
     if not TELEGRAM_TOKEN: return
-    
-    # Process standard signals
     if os.path.exists('unusual_messages.json'):
         await process_scraped_messages()
-    
-    # At 4 PM EST (21:00 UTC), send daily trends
     if datetime.now().hour >= 21:
         print("🕒 EOD window detected. Compiling daily trends...")
         await send_daily_trends()
