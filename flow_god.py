@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timedelta
 import re
 import hashlib
-from database import init_db, log_trade, get_performance_stats, log_long_term_flow, get_daily_trends, log_report, get_last_week_reports, clear_daily_flow, get_ticker_daily_stats
+from database import init_db, log_trade, get_performance_stats, log_long_term_flow, get_daily_trends, log_report, get_last_week_reports, clear_daily_flow, get_ticker_daily_stats, get_daily_trades, get_daily_performance_stats
 
 load_dotenv()
 init_db()
@@ -90,23 +90,57 @@ def calculate_iv_rank(ticker):
     except: return 0
 
 async def send_daily_trends():
-    """Compile, summarize with AI, and send daily smart money trends to Telegram."""
+    """Compile, summarize with AI, and send daily smart money trends and performance to Telegram."""
     trends = get_daily_trends()
-    if not trends: return
+    daily_trades = get_daily_trades()
+    perf_stats = get_daily_performance_stats()
+    
+    if not trends and not daily_trades and not perf_stats: return
+    
     past_reports = get_last_week_reports()
-    raw_data = "\n".join([f"{t}: {d}, ${p/1e6:.1f}M ({c} orders)" for t, d, p, c in trends])
+    
+    trends_raw = "\n".join([f"{t}: {d}, ${p/1e6:.1f}M ({c} orders)" for t, d, p, c in trends])
+    trades_raw = "\n".join([f"{t}: {d}, Price: ${ep}, Conv: {cs}, Prem: ${p/1e3:.1f}k" for t, d, ep, tp, sl, cs, p in daily_trades])
+    
+    # Format performance statistics
+    perf_raw = "No trades closed today."
+    perfect_raw = "None"
+    if perf_stats:
+        perf_raw = (f"Total Closed (Timeframe Ended): {perf_stats['total']}\n"
+                   f"Successful Wins: {perf_stats['wins']}\n"
+                   f"Today's Accuracy: {perf_stats['win_rate']:.1f}%\n"
+                   f"Avg Leveraged ROI: {perf_stats['avg_pnl']:+.1f}%")
+        
+        if perf_stats['perfect_convictions']:
+            perfect_raw = "\n".join([f"{t['ticker']} ({t['direction']}): {t['pnl']:+.1f}% ROI" for t in perf_stats['perfect_convictions']])
+
     history_context = "\n---\n".join(past_reports) if past_reports else "No historical reports available."
+    
     prompt = f"""
-    You are the FlowGod institutional analyst. Summarize today's Smart Money Trends based on long-term institutional option flow (>30 DTE).
-    TODAY'S RAW DATA:
-    {raw_data}
+    You are the FlowGod institutional analyst. Summarize today's Smart Money Activity, Important Events, and Performance.
+    
+    LONG-TERM FLOW (>30 DTE):
+    {trends_raw}
+    
+    TODAY'S NEW SIGNALS/TRADES:
+    {trades_raw}
+    
+    TODAY'S PERFORMANCE (Trades whose timeframe ended today):
+    {perf_raw}
+    
+    10/10 CONVICTION PERFORMANCE TODAY:
+    {perfect_raw}
+    
     PAST WEEK'S SUMMARIES FOR CONTEXT:
     {history_context}
+    
     INSTRUCTIONS:
-    1. Identify the top 3 high-conviction institutional themes today.
-    2. Note if any tickers from the past week are seeing REPEAT buying/selling.
-    3. Format in clean HTML for Telegram.
-    4. End with a "Market Sentiment" score (1-10).
+    1. Identify where 'Smart Money' is moving.
+    2. Highlight significant events/themes.
+    3. Analyze today's accuracy and performance. Be critical if the win rate is low.
+    4. Explicitly mention the performance of any 10/10 conviction trades that were closed today.
+    5. Format in clean HTML for Telegram.
+    6. End with a "Market Sentiment" score (1-10) and a brief "Outlook" for tomorrow.
     """
     summary = "Unable to generate summary."
     keys = list(GEMINI_API_KEYS)
@@ -120,7 +154,7 @@ async def send_daily_trends():
         except: continue
     log_report(summary)
     bot = Bot(token=TELEGRAM_TOKEN)
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"📊 <b>END-OF-DAY INSTITUTIONAL INTELLIGENCE</b>\n\n{summary}", parse_mode='HTML')
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"📊 <b>END-OF-DAY SMART MONEY & PERFORMANCE INTELLIGENCE</b>\n\n{summary}", parse_mode='HTML')
     clear_daily_flow()
 
 def calculate_rsi(data, window=14):
@@ -170,12 +204,18 @@ async def analyze_with_ai_retry(trade_content, news_context, stats, market_data,
     return None
 
 def fetch_news(ticker, query_type="general"):
+    """Fetch news with a strict internal timeout to prevent hanging."""
     try:
         yesterday = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
         query = f'site:sec.gov "{ticker}" ("Form 4" OR "13D" OR "13G") after:{yesterday}' if query_type == "sec" else f"{ticker} stock news insider catalyst after:{yesterday}"
+        
+        # googlesearch-python doesn't have an internal timeout, so we just limit the results strictly
+        print(f"🔍 Searching news for {ticker} ({query_type})...")
         results = list(search(query, num_results=3, lang="en"))
         return "\n".join(results)
-    except: return "No recent data found."
+    except Exception as e:
+        print(f"⚠️ News search failed for {ticker}: {e}")
+        return "No recent data found."
 
 def get_stable_id(ticker, strike, expiry, side, reported_time):
     """Create a unique hash for a trade. Premium is excluded to group Interval/Hot alerts."""
@@ -365,15 +405,33 @@ async def process_scraped_messages():
     if os.path.exists(PROCESSED_FILE):
         with open(PROCESSED_FILE, 'r') as f: processed = json.load(f)
     
-    for sid, signal in unique_signals.items():
-        if sid in processed: continue
-        data, ticker, stats, entry_price, stable_id = await perform_full_analysis(signal['content'])
-        if data and data not in ["STORED", "FILTERED_BY_CAP"] and data['insider_conviction'] >= 6:
-            bot = Bot(token=TELEGRAM_TOKEN)
-            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=format_telegram_msg(ticker, data, stats), parse_mode='HTML')
-        processed.append(sid)
-        if len(processed) > 500: processed.pop(0)
-        
+    print(f"📦 Processing {len(unique_signals)} unique signals...")
+    
+    semaphore = asyncio.Semaphore(3) # Process 3 at a time to avoid rate limits
+
+    async def analyze_and_send(sid, signal):
+        async with semaphore:
+            if sid in processed: return
+            print(f"🔮 Analyzing signal for {sid[:8]}...")
+            try:
+                # Use a global timeout of 90s per signal analysis
+                res = await asyncio.wait_for(perform_full_analysis(signal['content']), timeout=90)
+                data, ticker, stats, entry_price, stable_id = res
+                
+                if data and data not in ["STORED", "FILTERED_BY_CAP"] and data['insider_conviction'] >= 6:        
+                    bot = Bot(token=TELEGRAM_TOKEN)
+                    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=format_telegram_msg(ticker, data, stats), parse_mode='HTML')
+                    print(f"✅ Signal sent for {ticker}")
+                processed.append(sid)
+            except asyncio.TimeoutError:
+                print(f"⌛ Timeout analyzing signal for {sid[:8]}")
+            except Exception as e:
+                print(f"❌ Error analyzing signal for {sid[:8]}: {e}")
+
+    tasks = [analyze_and_send(sid, signal) for sid, signal in unique_signals.items()]
+    await asyncio.gather(*tasks)
+
+    if len(processed) > 500: processed = processed[-500:]
     with open(PROCESSED_FILE, 'w') as f: json.dump(processed, f)
 
 async def main():

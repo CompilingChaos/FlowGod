@@ -45,6 +45,9 @@ async def validate_trades():
                 timeframe_hours = safe_float(trade['timeframe_hours'], 24.0)
                 
                 tk = yf.Ticker(ticker)
+                # history() doesn't have a timeout, so we use asyncio.wait_for or just accept it's a synchronous call.
+                # Since this is a loop, we'll add a simple print to track progress.
+                print(f"📊 Validating {ticker}...")
                 hist = tk.history(period="1d")
                 if hist.empty:
                     print(f"⚠️ No price data for {ticker}")

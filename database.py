@@ -107,6 +107,18 @@ def get_daily_trends():
         ''', (f'{today}%',))
         return cursor.fetchall()
 
+def get_daily_trades():
+    with sqlite3.connect(DB_NAME) as conn:
+        cursor = conn.cursor()
+        today = datetime.now().strftime('%Y-%m-%d')
+        cursor.execute('''
+            SELECT ticker, direction, entry_price, target_price, stop_loss, conviction_score, premium 
+            FROM trades 
+            WHERE entry_time LIKE ?
+            ORDER BY premium DESC
+        ''', (f'{today}%',))
+        return cursor.fetchall()
+
 def log_trade(ticker, direction, leverage, timeframe_hours, conviction, entry_price, target, stop, iv_rank=0, premium=0, option_entry=0):
     with sqlite3.connect(DB_NAME) as conn:
         cursor = conn.cursor()
@@ -146,6 +158,40 @@ def get_ticker_daily_stats(ticker):
             stats[d]["prem"] += (prem or 0)
             
         return stats
+
+def get_daily_performance_stats():
+    """Get statistics for trades that were closed today."""
+    with sqlite3.connect(DB_NAME) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        today = datetime.now().strftime('%Y-%m-%d')
+        
+        # Get all trades closed today
+        cursor.execute('''
+            SELECT ticker, direction, pnl, is_win, conviction_score, exit_reason
+            FROM trades 
+            WHERE status = 'CLOSED' AND exit_time LIKE ?
+        ''', (f'{today}%',))
+        closed_trades = cursor.fetchall()
+        
+        if not closed_trades:
+            return None
+            
+        total = len(closed_trades)
+        wins = sum(1 for t in closed_trades if t['is_win'])
+        avg_pnl = sum(t['pnl'] for t in closed_trades) / total
+        
+        # Identify 10/10 convictions closed today
+        perfect_convictions = [t for t in closed_trades if t['conviction_score'] >= 10]
+        
+        return {
+            "total": total,
+            "wins": wins,
+            "win_rate": (wins / total) * 100,
+            "avg_pnl": avg_pnl,
+            "perfect_convictions": perfect_convictions,
+            "trades": closed_trades
+        }
 
 def get_performance_stats():
     with sqlite3.connect(DB_NAME) as conn:
